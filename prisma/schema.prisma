@@ -1,0 +1,1976 @@
+// HandyMan-AI — data model
+//
+// Conventions:
+//   * All monetary amounts are BigInt minor units (cents). Never Float, never Decimal-as-Float.
+//   * Rates/percentages are Decimal with explicit precision.
+//   * Every business table carries organizationId; most also carry locationId for GL dimensions
+//     and row-level scoping.
+//   * Records created by a migration carry importBatchId + externalId so a batch can be
+//     reconciled, re-imported as an upsert, or rolled back.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// TENANT, LOCATIONS, IDENTITY, ACCESS CONTROL
+// ============================================================================
+
+enum DataMode {
+  DEMO
+  LIVE
+}
+
+enum CostingMethod {
+  AVERAGE
+  FIFO
+}
+
+model Organization {
+  id                String        @id @default(cuid())
+  name              String
+  legalName         String?
+  dataMode          DataMode      @default(LIVE)
+  currency          String        @default("USD")
+  timezone          String        @default("America/Phoenix")
+  fiscalYearStartMo Int           @default(1)
+  costingMethod     CostingMethod @default(AVERAGE)
+  useWipAccounting  Boolean       @default(false) // hold job costs in WIP until invoiced
+  defaultBurdenRate Decimal       @default("0.35") @db.Decimal(6, 4)
+  logoUrl           String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  locations     Location[]
+  users         User[]
+  customers     Customer[]
+  accounts      Account[]
+  journalEntries JournalEntry[]
+  periods       AccountingPeriod[]
+  jobs          Job[]
+  quotes        Quote[]
+  invoices      Invoice[]
+  vendors       Vendor[]
+  priceBookItems PriceBookItem[]
+  stockLocations StockLocation[]
+  importBatches ImportBatch[]
+  auditLogs     AuditLog[]
+  docSequences  DocumentSequence[]
+  taxJurisdictions TaxJurisdiction[]
+  serviceTypes  ServiceType[]
+  roles         Role[]
+
+  @@index([dataMode])
+}
+
+model Location {
+  id             String   @id @default(cuid())
+  organizationId String
+  code           String   // short code used on document numbers, e.g. "PHX"
+  name           String
+  addressLine1   String?
+  addressLine2   String?
+  city           String?
+  state          String?
+  postalCode     String?
+  phone          String?
+  email          String?
+  latitude       Decimal? @db.Decimal(10, 7)
+  longitude      Decimal? @db.Decimal(10, 7)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  serviceAreas   ServiceArea[]
+  userLocations  UserLocation[]
+  jobs           Job[]
+  quotes         Quote[]
+  invoices       Invoice[]
+  stockLocations StockLocation[]
+  journalLines   JournalLine[]
+  priceOverrides PriceOverride[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId])
+}
+
+// A location's territory: a set of postal codes and/or a geofence polygon.
+model ServiceArea {
+  id          String   @id @default(cuid())
+  locationId  String
+  name        String
+  postalCodes String[] // simple, fast path used for routing leads to a branch
+  geoJson     Json?    // optional polygon for map display / precise containment
+  priority    Int      @default(0) // tiebreak when areas overlap
+  isActive    Boolean  @default(true)
+
+  location Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@index([locationId])
+}
+
+model User {
+  id             String    @id @default(cuid())
+  organizationId String
+  email          String
+  passwordHash   String?
+  firstName      String
+  lastName       String
+  phone          String?
+  avatarUrl      String?
+  isActive       Boolean   @default(true)
+  lastLoginAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  userRoles     UserRole[]
+  userLocations UserLocation[]
+  technician    Technician?
+  auditLogs     AuditLog[]
+
+  @@unique([organizationId, email])
+  @@index([organizationId])
+}
+
+// Roles are per-organization so a customer can define their own without a code change.
+model Role {
+  id             String   @id @default(cuid())
+  organizationId String
+  key            String   // OWNER, CONTROLLER, BOOKKEEPER, BRANCH_MANAGER, DISPATCHER, TECHNICIAN, SUBCONTRACTOR, CUSTOMER
+  name           String
+  description    String?
+  isSystem       Boolean  @default(false) // system roles cannot be deleted
+  permissions    String[] // capability strings, e.g. "gl:post", "finance:read_cost"
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userRoles    UserRole[]
+
+  @@unique([organizationId, key])
+}
+
+model UserRole {
+  id     String @id @default(cuid())
+  userId String
+  roleId String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId])
+}
+
+// Row-level scoping: which locations a user may see. Empty set + OWNER/CONTROLLER = all.
+model UserLocation {
+  id         String  @id @default(cuid())
+  userId     String
+  locationId String
+  isPrimary  Boolean @default(false)
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  location Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, locationId])
+}
+
+enum PayType {
+  HOURLY
+  SALARY
+  PIECE_RATE
+  SUBCONTRACTOR
+}
+
+model Technician {
+  id             String  @id @default(cuid())
+  organizationId String
+  userId         String  @unique
+  employeeCode   String?
+  payType        PayType @default(HOURLY)
+  isSubcontractor Boolean @default(false) // drives 1099 tracking
+  vendorId       String? // subcontractors are also vendors for AP
+  color          String? // dispatch board color
+  capacityHoursPerDay Decimal @default("8") @db.Decimal(5, 2)
+  isActive       Boolean @default(true)
+
+  user          User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vendor        Vendor?         @relation(fields: [vendorId], references: [id])
+  burdenRates   TechnicianRate[]
+  skills        TechnicianSkill[]
+  credentials   TechnicianCredential[]
+  jobAssignments JobAssignment[]
+  timeEntries   TimeEntry[]
+  vanStock      StockLocation[]
+
+  @@index([organizationId])
+}
+
+// Wage + burden versioned by effective date, so historical job costs keep the rate that
+// applied when the work was performed.
+model TechnicianRate {
+  id             String    @id @default(cuid())
+  technicianId   String
+  effectiveFrom  DateTime
+  effectiveTo    DateTime?
+  baseHourlyCents BigInt   // wage
+  overtimeMultiplier Decimal @default("1.5") @db.Decimal(4, 2)
+  payrollTaxRate Decimal   @default("0.0765") @db.Decimal(6, 4)
+  workersCompRate Decimal  @default("0.08")   @db.Decimal(6, 4)
+  benefitsRate   Decimal   @default("0.06")   @db.Decimal(6, 4)
+  vehicleMonthlyCents BigInt @default(0)
+  phoneMonthlyCents   BigInt @default(0)
+  billableHoursPerMonth Decimal @default("140") @db.Decimal(6, 2)
+  // Denormalized result of the burden formula; recomputed on write.
+  loadedHourlyCents BigInt
+  commissionRate Decimal?  @db.Decimal(6, 4)
+
+  technician Technician @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+
+  @@index([technicianId, effectiveFrom])
+}
+
+model Skill {
+  id             String @id @default(cuid())
+  organizationId String
+  name           String
+  category       String?
+
+  technicians TechnicianSkill[]
+
+  @@unique([organizationId, name])
+}
+
+model TechnicianSkill {
+  id           String @id @default(cuid())
+  technicianId String
+  skillId      String
+  proficiency  Int    @default(3) // 1-5, used by skill-matched dispatch
+
+  technician Technician @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+  skill      Skill      @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@unique([technicianId, skillId])
+}
+
+enum CredentialType {
+  LICENSE
+  CERTIFICATION
+  INSURANCE
+  BACKGROUND_CHECK
+  DRIVERS_LICENSE
+}
+
+// Licensing / insurance expiry tracking, per state. Drives compliance alerts.
+model TechnicianCredential {
+  id             String         @id @default(cuid())
+  technicianId   String
+  type           CredentialType
+  name           String
+  number         String?
+  issuingState   String?
+  issuedOn       DateTime?
+  expiresOn      DateTime?
+  documentUrl    String?
+  isActive       Boolean        @default(true)
+
+  technician Technician @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+
+  @@index([technicianId, expiresOn])
+}
+
+// ============================================================================
+// CRM — CUSTOMERS, PROPERTIES, EQUIPMENT
+// ============================================================================
+
+enum CustomerType {
+  RESIDENTIAL
+  COMMERCIAL
+  PROPERTY_MANAGER
+  BUILDER
+}
+
+model Customer {
+  id             String       @id @default(cuid())
+  organizationId String
+  customerNo     String
+  type           CustomerType @default(RESIDENTIAL)
+  companyName    String?
+  firstName      String?
+  lastName       String?
+  email          String?
+  phone          String?
+  altPhone       String?
+  billingAddress1 String?
+  billingAddress2 String?
+  billingCity    String?
+  billingState   String?
+  billingPostal  String?
+  notes          String?
+  source         String?  // how they found us — marketing attribution
+  // Terms & credit
+  paymentTermsDays Int     @default(0)
+  creditLimitCents BigInt?
+  isTaxExempt      Boolean @default(false)
+  taxExemptCertNo  String?
+  taxExemptExpires DateTime?
+  priceTier        String? // drives customer-specific pricing
+  isActive         Boolean @default(true)
+  externalId       String?
+  importBatchId    String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  importBatch  ImportBatch? @relation(fields: [importBatchId], references: [id])
+
+  properties Property[]
+  contacts   Contact[]
+  jobs       Job[]
+  quotes     Quote[]
+  invoices   Invoice[]
+  payments   Payment[]
+  agreements ServiceAgreement[]
+
+  @@unique([organizationId, customerNo])
+  @@index([organizationId, lastName])
+  @@index([organizationId, externalId])
+}
+
+// A customer may own several service addresses. Service history attaches to the property,
+// not the customer — this is what makes repeat-visit context useful to a tech.
+model Property {
+  id           String   @id @default(cuid())
+  customerId   String
+  label        String?
+  addressLine1 String
+  addressLine2 String?
+  city         String
+  state        String
+  postalCode   String
+  latitude     Decimal? @db.Decimal(10, 7)
+  longitude    Decimal? @db.Decimal(10, 7)
+  accessNotes  String?  // gate code, dog, park in rear
+  yearBuilt    Int?
+  squareFeet   Int?
+  taxJurisdictionId String? // sales tax resolves on the SERVICE address, not the branch
+  isActive     Boolean  @default(true)
+  externalId   String?
+
+  customer         Customer         @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  taxJurisdiction  TaxJurisdiction? @relation(fields: [taxJurisdictionId], references: [id])
+
+  equipment Equipment[]
+  jobs      Job[]
+  quotes    Quote[]
+  agreements ServiceAgreement[]
+
+  @@index([customerId])
+  @@index([postalCode])
+}
+
+model Contact {
+  id         String  @id @default(cuid())
+  customerId String
+  firstName  String
+  lastName   String?
+  email      String?
+  phone      String?
+  role       String? // tenant, spouse, site manager
+  isPrimary  Boolean @default(false)
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId])
+}
+
+// Installed equipment at a property — water heater, HVAC unit, garage opener.
+model Equipment {
+  id           String    @id @default(cuid())
+  propertyId   String
+  name         String
+  manufacturer String?
+  modelNumber  String?
+  serialNumber String?
+  installedOn  DateTime?
+  warrantyEnds DateTime?
+  location     String?   // "garage, north wall"
+  notes        String?
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([propertyId])
+}
+
+// ============================================================================
+// SERVICE CATALOG & PRICE BOOK
+// ============================================================================
+
+model ServiceType {
+  id             String  @id @default(cuid())
+  organizationId String
+  name           String  // Drywall, Plumbing, Carpentry, Electrical, Painting
+  code           String
+  defaultRevenueAccountId String?
+  isActive       Boolean @default(true)
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  revenueAccount Account?     @relation(fields: [defaultRevenueAccountId], references: [id])
+
+  jobs           Job[]
+  priceBookItems PriceBookItem[]
+  journalLines   JournalLine[]
+
+  @@unique([organizationId, code])
+}
+
+enum PriceItemKind {
+  PART          // stocked inventory
+  MATERIAL      // consumable, may or may not be stocked
+  LABOR         // hourly labor rate
+  FLAT_RATE     // a priced task: "replace standard toilet"
+  FEE           // trip charge, diagnostic, disposal
+  SUBCONTRACT
+}
+
+model PriceBookItem {
+  id             String        @id @default(cuid())
+  organizationId String
+  sku            String
+  name           String
+  description    String?
+  kind           PriceItemKind
+  serviceTypeId  String?
+  unit           String        @default("ea")
+
+  // Costing
+  costCents      BigInt  @default(0) // standard/last cost; inventory uses moving average
+  markupPercent  Decimal? @db.Decimal(7, 4)
+  priceCents     BigInt  @default(0) // sell price
+  // Flat-rate tasks bundle labor + materials
+  estimatedHours Decimal? @db.Decimal(6, 2)
+
+  isTaxableLabor    Boolean @default(false)
+  isTaxableMaterial Boolean @default(true)
+
+  // Inventory behaviour
+  isStocked      Boolean @default(false)
+  isSerialized   Boolean @default(false)
+  reorderPoint   Decimal? @db.Decimal(12, 3)
+  reorderQty     Decimal? @db.Decimal(12, 3)
+  preferredVendorId String?
+
+  incomeAccountId    String?
+  cogsAccountId      String?
+  inventoryAccountId String?
+
+  isActive      Boolean  @default(true)
+  externalId    String?
+  importBatchId String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  serviceType      ServiceType? @relation(fields: [serviceTypeId], references: [id])
+  preferredVendor  Vendor?      @relation(fields: [preferredVendorId], references: [id])
+  incomeAccount    Account?     @relation("ItemIncomeAccount", fields: [incomeAccountId], references: [id])
+  cogsAccount      Account?     @relation("ItemCogsAccount", fields: [cogsAccountId], references: [id])
+  inventoryAccount Account?     @relation("ItemInventoryAccount", fields: [inventoryAccountId], references: [id])
+  importBatch      ImportBatch? @relation(fields: [importBatchId], references: [id])
+
+  overrides      PriceOverride[]
+  stockLevels    StockLevel[]
+  inventoryTxns  InventoryTransaction[]
+  quoteLines     QuoteLine[]
+  jobLines       JobLine[]
+  invoiceLines   InvoiceLine[]
+  poLines        PurchaseOrderLine[]
+  kitComponents  PriceBookKitComponent[] @relation("KitParent")
+  usedInKits     PriceBookKitComponent[] @relation("KitComponent")
+
+  @@unique([organizationId, sku])
+  @@index([organizationId, kind])
+  @@index([organizationId, externalId])
+}
+
+// A flat-rate task is a kit: labor hours + the parts it consumes.
+model PriceBookKitComponent {
+  id          String  @id @default(cuid())
+  parentId    String
+  componentId String
+  quantity    Decimal @db.Decimal(12, 3)
+
+  parent    PriceBookItem @relation("KitParent", fields: [parentId], references: [id], onDelete: Cascade)
+  component PriceBookItem @relation("KitComponent", fields: [componentId], references: [id])
+
+  @@unique([parentId, componentId])
+}
+
+// Price varies by location and/or customer tier.
+model PriceOverride {
+  id            String  @id @default(cuid())
+  priceBookItemId String
+  locationId    String?
+  priceTier     String?
+  priceCents    BigInt
+  effectiveFrom DateTime @default(now())
+  effectiveTo   DateTime?
+
+  priceBookItem PriceBookItem @relation(fields: [priceBookItemId], references: [id], onDelete: Cascade)
+  location      Location?     @relation(fields: [locationId], references: [id])
+
+  @@index([priceBookItemId])
+}
+
+// ============================================================================
+// LEADS, QUOTES, JOBS, FIELD WORK
+// ============================================================================
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  QUOTED
+  WON
+  LOST
+}
+
+model Lead {
+  id             String     @id @default(cuid())
+  organizationId String
+  locationId     String?
+  status         LeadStatus @default(NEW)
+  source         String?
+  contactName    String?
+  phone          String?
+  email          String?
+  postalCode     String?
+  description    String?
+  customerId     String?
+  lostReason     String?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  quotes Quote[]
+
+  @@index([organizationId, status])
+}
+
+enum QuoteStatus {
+  DRAFT
+  SENT
+  VIEWED
+  APPROVED
+  DECLINED
+  EXPIRED
+  CONVERTED
+}
+
+model Quote {
+  id             String      @id @default(cuid())
+  organizationId String
+  locationId     String
+  quoteNo        String
+  customerId     String
+  propertyId     String
+  leadId         String?
+  jobId          String?     // set when converted
+  status         QuoteStatus @default(DRAFT)
+  title          String?
+  scopeOfWork    String?
+  createdByUserId String?
+  presentedByTechnicianId String?
+
+  subtotalCents  BigInt   @default(0)
+  discountCents  BigInt   @default(0)
+  taxCents       BigInt   @default(0)
+  totalCents     BigInt   @default(0)
+  // Cost roll-up is stored but stripped from responses for roles lacking finance:read_cost
+  estimatedCostCents BigInt @default(0)
+
+  depositRequiredCents BigInt @default(0)
+  validUntil     DateTime?
+  sentAt         DateTime?
+  viewedAt       DateTime?
+  approvedAt     DateTime?
+  declinedAt     DateTime?
+  declineReason  String?
+  signatureId    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  location     Location     @relation(fields: [locationId], references: [id])
+  customer     Customer     @relation(fields: [customerId], references: [id])
+  property     Property     @relation(fields: [propertyId], references: [id])
+  lead         Lead?        @relation(fields: [leadId], references: [id])
+  job          Job?         @relation(fields: [jobId], references: [id])
+  signature    Signature?   @relation(fields: [signatureId], references: [id])
+
+  options QuoteOption[]
+  lines   QuoteLine[]
+  photos  Photo[]
+
+  @@unique([organizationId, quoteNo])
+  @@index([organizationId, status])
+  @@index([customerId])
+}
+
+// Good / better / best. Exactly one may be selected on approval.
+model QuoteOption {
+  id          String  @id @default(cuid())
+  quoteId     String
+  name        String  // "Good", "Better", "Best"
+  description String?
+  sortOrder   Int     @default(0)
+  isSelected  Boolean @default(false)
+  isRecommended Boolean @default(false)
+  subtotalCents BigInt @default(0)
+  totalCents    BigInt @default(0)
+
+  quote Quote       @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  lines QuoteLine[]
+
+  @@index([quoteId])
+}
+
+model QuoteLine {
+  id              String   @id @default(cuid())
+  quoteId         String
+  quoteOptionId   String?
+  priceBookItemId String?
+  sortOrder       Int      @default(0)
+  description     String
+  quantity        Decimal  @db.Decimal(12, 3)
+  unitPriceCents  BigInt
+  unitCostCents   BigInt   @default(0) // redacted for non-finance roles
+  discountCents   BigInt   @default(0)
+  isTaxable       Boolean  @default(true)
+  taxCents        BigInt   @default(0)
+  totalCents      BigInt   @default(0)
+
+  quote         Quote          @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  quoteOption   QuoteOption?   @relation(fields: [quoteOptionId], references: [id], onDelete: Cascade)
+  priceBookItem PriceBookItem? @relation(fields: [priceBookItemId], references: [id])
+
+  @@index([quoteId])
+}
+
+enum JobStatus {
+  DRAFT
+  QUOTED
+  APPROVED
+  SCHEDULED
+  DISPATCHED
+  EN_ROUTE
+  IN_PROGRESS
+  ON_HOLD
+  COMPLETED
+  INVOICED
+  PAID
+  CLOSED
+  CANCELLED
+}
+
+enum JobPriority {
+  LOW
+  NORMAL
+  HIGH
+  EMERGENCY
+}
+
+model Job {
+  id             String      @id @default(cuid())
+  organizationId String
+  locationId     String
+  jobNo          String
+  customerId     String
+  propertyId     String
+  serviceTypeId  String?
+  status         JobStatus   @default(DRAFT)
+  priority       JobPriority @default(NORMAL)
+  title          String
+  description    String?
+  internalNotes  String?     // never shown to the customer
+
+  // Warranty / callback linkage — a callback is a child of the original job.
+  parentJobId    String?
+  isWarranty     Boolean @default(false)
+  isBillable     Boolean @default(true)
+
+  agreementId    String?
+  requestedAt    DateTime?
+  scheduledStart DateTime?
+  scheduledEnd   DateTime?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  closedAt       DateTime?
+
+  // Denormalized roll-ups, recomputed on cost/revenue events. Cost fields are redacted
+  // for roles without finance:read_cost.
+  revenueCents      BigInt @default(0)
+  laborCostCents    BigInt @default(0)
+  materialCostCents BigInt @default(0)
+  subCostCents      BigInt @default(0)
+  otherCostCents    BigInt @default(0)
+
+  externalId    String?
+  importBatchId String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  location     Location     @relation(fields: [locationId], references: [id])
+  customer     Customer     @relation(fields: [customerId], references: [id])
+  property     Property     @relation(fields: [propertyId], references: [id])
+  serviceType  ServiceType? @relation(fields: [serviceTypeId], references: [id])
+  parentJob    Job?         @relation("JobCallbacks", fields: [parentJobId], references: [id])
+  agreement    ServiceAgreement? @relation(fields: [agreementId], references: [id])
+  importBatch  ImportBatch? @relation(fields: [importBatchId], references: [id])
+
+  callbacks     Job[]      @relation("JobCallbacks")
+  quotes        Quote[]
+  visits        JobVisit[]
+  assignments   JobAssignment[]
+  lines         JobLine[]
+  changeOrders  ChangeOrder[]
+  timeEntries   TimeEntry[]
+  photos        Photo[]
+  notes         JobNote[]
+  checklists    ChecklistInstance[]
+  signatures    Signature[]
+  invoices      Invoice[]
+  inventoryTxns InventoryTransaction[]
+  journalLines  JournalLine[]
+  permits       Permit[]
+  vendorBillLines VendorBillLine[]
+
+  @@unique([organizationId, jobNo])
+  @@index([organizationId, status])
+  @@index([locationId, scheduledStart])
+  @@index([customerId])
+  @@index([organizationId, externalId])
+}
+
+// One job may take several trips. Scheduling and dispatch operate on visits.
+model JobVisit {
+  id             String    @id @default(cuid())
+  jobId          String
+  sequence       Int       @default(1)
+  scheduledStart DateTime
+  scheduledEnd   DateTime
+  arrivedAt      DateTime?
+  departedAt     DateTime?
+  status         JobStatus @default(SCHEDULED)
+  notes          String?
+
+  job         Job             @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  assignments JobAssignment[]
+
+  @@index([jobId])
+  @@index([scheduledStart])
+}
+
+model JobAssignment {
+  id           String  @id @default(cuid())
+  jobId        String
+  jobVisitId   String?
+  technicianId String
+  isLead       Boolean @default(false)
+  assignedAt   DateTime @default(now())
+
+  job        Job        @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  jobVisit   JobVisit?  @relation(fields: [jobVisitId], references: [id], onDelete: Cascade)
+  technician Technician @relation(fields: [technicianId], references: [id])
+
+  @@unique([jobId, jobVisitId, technicianId])
+  @@index([technicianId])
+}
+
+// Work actually performed / parts actually used. This is what becomes the invoice
+// and what drives COGS — distinct from the quote, which was only a proposal.
+model JobLine {
+  id              String   @id @default(cuid())
+  jobId           String
+  changeOrderId   String?
+  priceBookItemId String?
+  sortOrder       Int      @default(0)
+  description     String
+  quantity        Decimal  @db.Decimal(12, 3)
+  unitPriceCents  BigInt
+  unitCostCents   BigInt   @default(0)
+  discountCents   BigInt   @default(0)
+  isTaxable       Boolean  @default(true)
+  totalCents      BigInt   @default(0)
+  isBilled        Boolean  @default(false)
+
+  job           Job            @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  changeOrder   ChangeOrder?   @relation(fields: [changeOrderId], references: [id])
+  priceBookItem PriceBookItem? @relation(fields: [priceBookItemId], references: [id])
+
+  @@index([jobId])
+}
+
+enum ChangeOrderStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  DECLINED
+}
+
+// Work discovered on site, beyond the original quote. Approved by the customer on the
+// tech's tablet before the work is done — this is the primary margin-leak defence.
+model ChangeOrder {
+  id            String            @id @default(cuid())
+  jobId         String
+  changeOrderNo String
+  status        ChangeOrderStatus @default(DRAFT)
+  reason        String
+  description   String?
+  subtotalCents BigInt            @default(0)
+  taxCents      BigInt            @default(0)
+  totalCents    BigInt            @default(0)
+  costCents     BigInt            @default(0)
+  requestedByTechnicianId String?
+  approvedAt    DateTime?
+  declinedAt    DateTime?
+  signatureId   String?
+  createdAt     DateTime          @default(now())
+
+  job       Job        @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  signature Signature? @relation(fields: [signatureId], references: [id])
+  lines     JobLine[]
+  photos    Photo[]
+
+  @@unique([jobId, changeOrderNo])
+  @@index([jobId])
+}
+
+enum TimeEntryKind {
+  TRAVEL
+  WORK
+  BREAK
+  SHOP
+  TRAINING
+}
+
+// Clock in/out with GPS. Feeds both payroll and job cost; separates drive time from
+// wrench time so utilization is real.
+model TimeEntry {
+  id           String        @id @default(cuid())
+  technicianId String
+  jobId        String?
+  jobVisitId   String?
+  kind         TimeEntryKind @default(WORK)
+  startedAt    DateTime
+  endedAt      DateTime?
+  minutes      Int?
+  startLat     Decimal? @db.Decimal(10, 7)
+  startLng     Decimal? @db.Decimal(10, 7)
+  endLat       Decimal? @db.Decimal(10, 7)
+  endLng       Decimal? @db.Decimal(10, 7)
+  isBillable   Boolean  @default(true)
+  // Rate snapshot at time of work, so later rate changes never restate history.
+  loadedHourlyCents BigInt?
+  costCents    BigInt?
+  isApproved   Boolean  @default(false)
+  notes        String?
+
+  technician Technician @relation(fields: [technicianId], references: [id])
+  job        Job?       @relation(fields: [jobId], references: [id])
+
+  @@index([technicianId, startedAt])
+  @@index([jobId])
+}
+
+enum PhotoStage {
+  BEFORE
+  DURING
+  AFTER
+  DAMAGE
+  RECEIPT
+  SITE_CONDITION
+  OTHER
+}
+
+// Photo provenance matters: EXIF, GPS and a server-side timestamp are what win
+// chargeback and liability disputes. Originals are never mutated.
+model Photo {
+  id            String     @id @default(cuid())
+  jobId         String?
+  quoteId       String?
+  changeOrderId String?
+  stage         PhotoStage @default(OTHER)
+  // Before/after pairing for side-by-side presentation
+  pairKey       String?
+  storageKey    String
+  thumbnailKey  String?
+  caption       String?
+  aiDescription String?    // AI-generated work narrative, tech-editable
+  takenAt       DateTime?
+  uploadedAt    DateTime   @default(now())
+  latitude      Decimal?   @db.Decimal(10, 7)
+  longitude     Decimal?   @db.Decimal(10, 7)
+  exif          Json?
+  contentHash   String?    // integrity proof
+  capturedByUserId String?
+  isCustomerVisible Boolean @default(true)
+
+  job         Job?         @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  quote       Quote?       @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  changeOrder ChangeOrder? @relation(fields: [changeOrderId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, stage])
+}
+
+model JobNote {
+  id         String   @id @default(cuid())
+  jobId      String
+  body       String
+  isInternal Boolean  @default(true)
+  authorUserId String?
+  createdAt  DateTime @default(now())
+
+  job Job @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId])
+}
+
+model ChecklistTemplate {
+  id             String  @id @default(cuid())
+  organizationId String
+  name           String
+  serviceTypeId  String?
+  items          Json    // [{ key, label, type: bool|text|number|photo, required }]
+  isActive       Boolean @default(true)
+
+  instances ChecklistInstance[]
+}
+
+model ChecklistInstance {
+  id          String    @id @default(cuid())
+  jobId       String
+  templateId  String
+  responses   Json      @default("{}")
+  completedAt DateTime?
+  completedByUserId String?
+
+  job      Job               @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  template ChecklistTemplate @relation(fields: [templateId], references: [id])
+
+  @@index([jobId])
+}
+
+enum SignatureKind {
+  QUOTE_APPROVAL
+  CHANGE_ORDER_APPROVAL
+  WORK_AUTHORIZATION
+  COMPLETION
+  PAYMENT_AUTHORIZATION
+}
+
+model Signature {
+  id          String        @id @default(cuid())
+  jobId       String?
+  kind        SignatureKind
+  signerName  String
+  signerRole  String?
+  storageKey  String        // PNG of the drawn signature
+  signedAt    DateTime      @default(now())
+  ipAddress   String?
+  deviceInfo  String?
+  latitude    Decimal? @db.Decimal(10, 7)
+  longitude   Decimal? @db.Decimal(10, 7)
+  documentHash String?      // hash of what was signed, so the terms can't be altered after
+
+  job          Job?          @relation(fields: [jobId], references: [id])
+  quotes       Quote[]
+  changeOrders ChangeOrder[]
+
+  @@index([jobId])
+}
+
+model Permit {
+  id           String    @id @default(cuid())
+  jobId        String
+  permitNumber String?
+  authority    String?
+  type         String?
+  appliedOn    DateTime?
+  issuedOn     DateTime?
+  inspectedOn  DateTime?
+  feeCents     BigInt    @default(0)
+  status       String    @default("PENDING")
+  documentUrl  String?
+
+  job Job @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId])
+}
+
+enum AgreementStatus {
+  ACTIVE
+  PAUSED
+  EXPIRED
+  CANCELLED
+}
+
+// Recurring maintenance contracts. Billed up front to deferred revenue, recognized as
+// each visit is performed.
+model ServiceAgreement {
+  id             String          @id @default(cuid())
+  organizationId String
+  locationId     String?
+  customerId     String
+  propertyId     String?
+  agreementNo    String
+  name           String
+  status         AgreementStatus @default(ACTIVE)
+  startDate      DateTime
+  endDate        DateTime?
+  visitsPerYear  Int             @default(2)
+  billingFrequency String        @default("ANNUAL") // ANNUAL, MONTHLY, QUARTERLY
+  amountCents    BigInt
+  discountPercent Decimal?       @db.Decimal(5, 2)
+  autoRenew      Boolean         @default(true)
+  nextVisitDue   DateTime?
+
+  customer Customer  @relation(fields: [customerId], references: [id])
+  property Property? @relation(fields: [propertyId], references: [id])
+
+  jobs     Job[]
+  invoices Invoice[]
+
+  @@unique([organizationId, agreementNo])
+  @@index([customerId])
+}
+
+// ============================================================================
+// INVENTORY — WAREHOUSES AND VAN STOCK
+// ============================================================================
+
+enum StockLocationKind {
+  WAREHOUSE
+  VAN
+  JOB_SITE
+  SHOP
+}
+
+// Every technician's van is a stock location. This is the difference between an
+// inventory number that is real and one that is fiction.
+model StockLocation {
+  id             String            @id @default(cuid())
+  organizationId String
+  locationId     String?
+  technicianId   String?           // set when kind = VAN
+  kind           StockLocationKind
+  code           String
+  name           String
+  inventoryAccountId String?       // warehouse vs van stock hit different GL accounts
+  isActive       Boolean           @default(true)
+
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  location         Location?    @relation(fields: [locationId], references: [id])
+  technician       Technician?  @relation(fields: [technicianId], references: [id])
+  inventoryAccount Account?     @relation(fields: [inventoryAccountId], references: [id])
+
+  stockLevels StockLevel[]
+  txnsFrom    InventoryTransaction[] @relation("TxnFrom")
+  txnsTo      InventoryTransaction[] @relation("TxnTo")
+  cycleCounts CycleCount[]
+  poReceipts  PurchaseOrder[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId, kind])
+}
+
+model StockLevel {
+  id              String  @id @default(cuid())
+  stockLocationId String
+  priceBookItemId String
+  quantity        Decimal @db.Decimal(14, 3) @default(0)
+  // Moving average cost, maintained per stock location on every receipt/transfer.
+  avgCostCents    BigInt  @default(0)
+  reorderPoint    Decimal? @db.Decimal(12, 3)
+  reorderQty      Decimal? @db.Decimal(12, 3)
+  binLocation     String?
+  updatedAt       DateTime @updatedAt
+
+  stockLocation StockLocation @relation(fields: [stockLocationId], references: [id], onDelete: Cascade)
+  priceBookItem PriceBookItem @relation(fields: [priceBookItemId], references: [id], onDelete: Cascade)
+
+  @@unique([stockLocationId, priceBookItemId])
+  @@index([priceBookItemId])
+}
+
+enum InventoryTxnKind {
+  RECEIPT        // from a PO
+  TRANSFER       // warehouse -> van, van -> van
+  CONSUMPTION    // used on a job -> COGS
+  RETURN         // unused parts back to stock
+  ADJUSTMENT     // cycle count variance
+  SHRINKAGE
+  OPENING        // migration
+}
+
+// The inventory ledger. Every movement is a row; stock levels are the running total.
+// Cost is captured AT MOVEMENT TIME so later average-cost changes never restate history.
+model InventoryTransaction {
+  id                String           @id @default(cuid())
+  organizationId    String
+  kind              InventoryTxnKind
+  priceBookItemId   String
+  fromStockLocationId String?
+  toStockLocationId   String?
+  quantity          Decimal          @db.Decimal(14, 3)
+  unitCostCents     BigInt
+  totalCostCents    BigInt
+  jobId             String?
+  purchaseOrderId   String?
+  serialNumbers     String[]
+  lotNumber         String?
+  journalEntryId    String?
+  occurredAt        DateTime         @default(now())
+  createdByUserId   String?
+  notes             String?
+
+  priceBookItem     PriceBookItem  @relation(fields: [priceBookItemId], references: [id])
+  fromStockLocation StockLocation? @relation("TxnFrom", fields: [fromStockLocationId], references: [id])
+  toStockLocation   StockLocation? @relation("TxnTo", fields: [toStockLocationId], references: [id])
+  job               Job?           @relation(fields: [jobId], references: [id])
+  purchaseOrder     PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id])
+  journalEntry      JournalEntry?  @relation(fields: [journalEntryId], references: [id])
+
+  @@index([organizationId, occurredAt])
+  @@index([priceBookItemId])
+  @@index([jobId])
+}
+
+model CycleCount {
+  id              String    @id @default(cuid())
+  organizationId  String
+  stockLocationId String
+  countNo         String
+  status          String    @default("OPEN") // OPEN, COUNTED, POSTED
+  countedByUserId String?
+  countedAt       DateTime?
+  postedAt        DateTime?
+  varianceCents   BigInt    @default(0)
+
+  stockLocation StockLocation    @relation(fields: [stockLocationId], references: [id])
+  lines         CycleCountLine[]
+
+  @@unique([organizationId, countNo])
+}
+
+model CycleCountLine {
+  id              String  @id @default(cuid())
+  cycleCountId    String
+  priceBookItemId String
+  expectedQty     Decimal @db.Decimal(14, 3)
+  countedQty      Decimal @db.Decimal(14, 3)
+  varianceQty     Decimal @db.Decimal(14, 3)
+  unitCostCents   BigInt
+  varianceCents   BigInt
+
+  cycleCount CycleCount @relation(fields: [cycleCountId], references: [id], onDelete: Cascade)
+
+  @@index([cycleCountId])
+}
+
+// ============================================================================
+// PURCHASING & ACCOUNTS PAYABLE
+// ============================================================================
+
+model Vendor {
+  id             String  @id @default(cuid())
+  organizationId String
+  vendorNo       String
+  name           String
+  contactName    String?
+  email          String?
+  phone          String?
+  addressLine1   String?
+  city           String?
+  state          String?
+  postalCode     String?
+  paymentTermsDays Int   @default(30)
+  // 1099 tracking — many handyman techs are subcontractors
+  is1099Vendor   Boolean @default(false)
+  taxIdLast4     String?
+  w9OnFile       Boolean @default(false)
+  defaultExpenseAccountId String?
+  isActive       Boolean @default(true)
+  externalId     String?
+  importBatchId  String?
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  defaultExpenseAccount Account? @relation(fields: [defaultExpenseAccountId], references: [id])
+  importBatch    ImportBatch? @relation(fields: [importBatchId], references: [id])
+
+  purchaseOrders PurchaseOrder[]
+  bills          VendorBill[]
+  priceBookItems PriceBookItem[]
+  technicians    Technician[]
+
+  @@unique([organizationId, vendorNo])
+  @@index([organizationId])
+}
+
+enum PurchaseOrderStatus {
+  DRAFT
+  SUBMITTED
+  PARTIALLY_RECEIVED
+  RECEIVED
+  CLOSED
+  CANCELLED
+}
+
+model PurchaseOrder {
+  id             String              @id @default(cuid())
+  organizationId String
+  locationId     String?
+  poNo           String
+  vendorId       String
+  status         PurchaseOrderStatus @default(DRAFT)
+  receiveToStockLocationId String?
+  jobId          String?             // direct-to-job purchase, bypasses stock
+  orderedAt      DateTime?
+  expectedAt     DateTime?
+  receivedAt     DateTime?
+  subtotalCents  BigInt              @default(0)
+  taxCents       BigInt              @default(0)
+  shippingCents  BigInt              @default(0)
+  totalCents     BigInt              @default(0)
+  notes          String?
+  createdByUserId String?
+  createdAt      DateTime            @default(now())
+
+  vendor        Vendor         @relation(fields: [vendorId], references: [id])
+  receiveTo     StockLocation? @relation(fields: [receiveToStockLocationId], references: [id])
+
+  lines         PurchaseOrderLine[]
+  inventoryTxns InventoryTransaction[]
+  bills         VendorBill[]
+
+  @@unique([organizationId, poNo])
+  @@index([organizationId, status])
+}
+
+model PurchaseOrderLine {
+  id              String  @id @default(cuid())
+  purchaseOrderId String
+  priceBookItemId String?
+  description     String
+  quantity        Decimal @db.Decimal(12, 3)
+  receivedQty     Decimal @db.Decimal(12, 3) @default(0)
+  unitCostCents   BigInt
+  totalCents      BigInt
+
+  purchaseOrder PurchaseOrder  @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  priceBookItem PriceBookItem? @relation(fields: [priceBookItemId], references: [id])
+
+  @@index([purchaseOrderId])
+}
+
+enum BillStatus {
+  DRAFT
+  OPEN
+  PARTIALLY_PAID
+  PAID
+  VOID
+}
+
+model VendorBill {
+  id             String     @id @default(cuid())
+  organizationId String
+  locationId     String?
+  billNo         String
+  vendorInvoiceNo String?
+  vendorId       String
+  purchaseOrderId String?
+  status         BillStatus @default(DRAFT)
+  billDate       DateTime
+  dueDate        DateTime?
+  subtotalCents  BigInt     @default(0)
+  taxCents       BigInt     @default(0)
+  totalCents     BigInt     @default(0)
+  paidCents      BigInt     @default(0)
+  // A tech photographs the supply-house receipt; OCR drafts the bill.
+  receiptPhotoKey String?
+  journalEntryId  String?
+  externalId      String?
+  importBatchId   String?
+  createdAt      DateTime   @default(now())
+
+  vendor        Vendor        @relation(fields: [vendorId], references: [id])
+  purchaseOrder PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id])
+  journalEntry  JournalEntry? @relation(fields: [journalEntryId], references: [id])
+  importBatch   ImportBatch?  @relation(fields: [importBatchId], references: [id])
+
+  lines    VendorBillLine[]
+  payments BillPayment[]
+
+  @@unique([organizationId, billNo])
+  @@index([organizationId, status])
+  @@index([vendorId])
+}
+
+model VendorBillLine {
+  id           String  @id @default(cuid())
+  vendorBillId String
+  accountId    String
+  jobId        String? // codes the cost straight to job costing
+  description  String
+  quantity     Decimal @db.Decimal(12, 3) @default(1)
+  unitCostCents BigInt
+  totalCents   BigInt
+
+  vendorBill VendorBill @relation(fields: [vendorBillId], references: [id], onDelete: Cascade)
+  account    Account    @relation(fields: [accountId], references: [id])
+  job        Job?       @relation(fields: [jobId], references: [id])
+
+  @@index([vendorBillId])
+  @@index([jobId])
+}
+
+model BillPayment {
+  id             String   @id @default(cuid())
+  organizationId String
+  vendorBillId   String
+  paymentNo      String
+  amountCents    BigInt
+  method         String   // CHECK, ACH, CARD, CASH
+  reference      String?  // check number
+  bankAccountId  String
+  paidAt         DateTime
+  journalEntryId String?
+
+  vendorBill   VendorBill    @relation(fields: [vendorBillId], references: [id])
+  bankAccount  Account       @relation(fields: [bankAccountId], references: [id])
+  journalEntry JournalEntry? @relation(fields: [journalEntryId], references: [id])
+
+  @@index([vendorBillId])
+}
+
+// ============================================================================
+// INVOICING, PAYMENTS, ACCOUNTS RECEIVABLE
+// ============================================================================
+
+enum InvoiceStatus {
+  DRAFT
+  OPEN
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  VOID
+  WRITTEN_OFF
+}
+
+model Invoice {
+  id             String        @id @default(cuid())
+  organizationId String
+  locationId     String
+  invoiceNo      String
+  customerId     String
+  jobId          String?
+  agreementId    String?
+  status         InvoiceStatus @default(DRAFT)
+  issueDate      DateTime
+  dueDate        DateTime
+  terms          String?
+  poNumber       String?       // the customer's PO reference
+  memo           String?
+
+  subtotalCents  BigInt @default(0)
+  discountCents  BigInt @default(0)
+  taxCents       BigInt @default(0)
+  totalCents     BigInt @default(0)
+  paidCents      BigInt @default(0)
+  depositAppliedCents BigInt @default(0)
+  balanceCents   BigInt @default(0)
+
+  // Progress billing: this invoice covers a percentage of the job
+  percentComplete Decimal? @db.Decimal(5, 2)
+  isProgressBilling Boolean @default(false)
+
+  sentAt         DateTime?
+  viewedAt       DateTime?
+  writtenOffAt   DateTime?
+  voidedAt       DateTime?
+  journalEntryId String?
+  externalId     String?
+  importBatchId  String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  location     Location      @relation(fields: [locationId], references: [id])
+  customer     Customer      @relation(fields: [customerId], references: [id])
+  job          Job?          @relation(fields: [jobId], references: [id])
+  agreement    ServiceAgreement? @relation(fields: [agreementId], references: [id])
+  journalEntry JournalEntry? @relation(fields: [journalEntryId], references: [id])
+  importBatch  ImportBatch?  @relation(fields: [importBatchId], references: [id])
+
+  lines        InvoiceLine[]
+  applications PaymentApplication[]
+  creditMemos  CreditMemo[]
+  taxLines     InvoiceTaxLine[]
+
+  @@unique([organizationId, invoiceNo])
+  @@index([organizationId, status])
+  @@index([customerId, dueDate])
+}
+
+model InvoiceLine {
+  id              String   @id @default(cuid())
+  invoiceId       String
+  priceBookItemId String?
+  revenueAccountId String?
+  sortOrder       Int      @default(0)
+  description     String
+  quantity        Decimal  @db.Decimal(12, 3)
+  unitPriceCents  BigInt
+  unitCostCents   BigInt   @default(0) // redacted for non-finance roles
+  discountCents   BigInt   @default(0)
+  isTaxable       Boolean  @default(true)
+  taxCents        BigInt   @default(0)
+  totalCents      BigInt   @default(0)
+
+  invoice        Invoice        @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  priceBookItem  PriceBookItem? @relation(fields: [priceBookItemId], references: [id])
+  revenueAccount Account?       @relation(fields: [revenueAccountId], references: [id])
+
+  @@index([invoiceId])
+}
+
+// Tax broken out per jurisdiction so the filing report is a query, not a reconstruction.
+model InvoiceTaxLine {
+  id               String @id @default(cuid())
+  invoiceId        String
+  taxJurisdictionId String
+  taxableCents     BigInt
+  rate             Decimal @db.Decimal(8, 5)
+  taxCents         BigInt
+
+  invoice         Invoice         @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  taxJurisdiction TaxJurisdiction @relation(fields: [taxJurisdictionId], references: [id])
+
+  @@index([invoiceId])
+}
+
+enum PaymentMethod {
+  CASH
+  CHECK
+  CARD
+  ACH
+  FINANCING
+  OTHER
+}
+
+model Payment {
+  id             String        @id @default(cuid())
+  organizationId String
+  locationId     String?
+  paymentNo      String
+  customerId     String
+  method         PaymentMethod
+  amountCents    BigInt
+  unappliedCents BigInt        @default(0)
+  // Deposits sit in 2300 Customer Deposits (a liability) until applied to an invoice.
+  isDeposit      Boolean       @default(false)
+  receivedAt     DateTime
+  reference      String?       // check number / auth code
+  // PCI: we store only the processor token and display digits. Never a PAN.
+  processorToken String?
+  cardLast4      String?
+  cardBrand      String?
+  feeCents       BigInt        @default(0)
+  depositBatchId String?       // groups undeposited funds into a bank deposit
+  journalEntryId String?
+  externalId     String?
+  importBatchId  String?
+  createdAt      DateTime      @default(now())
+
+  customer     Customer      @relation(fields: [customerId], references: [id])
+  journalEntry JournalEntry? @relation(fields: [journalEntryId], references: [id])
+  depositBatch DepositBatch? @relation(fields: [depositBatchId], references: [id])
+  importBatch  ImportBatch?  @relation(fields: [importBatchId], references: [id])
+
+  applications PaymentApplication[]
+
+  @@unique([organizationId, paymentNo])
+  @@index([customerId])
+  @@index([organizationId, receivedAt])
+}
+
+model PaymentApplication {
+  id          String   @id @default(cuid())
+  paymentId   String
+  invoiceId   String
+  amountCents BigInt
+  appliedAt   DateTime @default(now())
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  invoice Invoice @relation(fields: [invoiceId], references: [id])
+
+  @@unique([paymentId, invoiceId])
+}
+
+// Moves money from 1050 Undeposited Funds to the bank account, matching the real deposit slip.
+model DepositBatch {
+  id             String   @id @default(cuid())
+  organizationId String
+  depositNo      String
+  bankAccountId  String
+  depositedAt    DateTime
+  totalCents     BigInt
+  journalEntryId String?
+
+  bankAccount  Account       @relation(fields: [bankAccountId], references: [id])
+  journalEntry JournalEntry? @relation(fields: [journalEntryId], references: [id])
+  payments     Payment[]
+
+  @@unique([organizationId, depositNo])
+}
+
+model CreditMemo {
+  id             String   @id @default(cuid())
+  organizationId String
+  creditMemoNo   String
+  customerId     String
+  invoiceId      String?
+  reason         String
+  amountCents    BigInt
+  appliedCents   BigInt   @default(0)
+  issuedAt       DateTime @default(now())
+  journalEntryId String?
+
+  invoice      Invoice?      @relation(fields: [invoiceId], references: [id])
+  journalEntry JournalEntry? @relation(fields: [journalEntryId], references: [id])
+
+  @@unique([organizationId, creditMemoNo])
+}
+
+// ============================================================================
+// GENERAL LEDGER
+// ============================================================================
+
+enum AccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  REVENUE
+  COGS
+  EXPENSE
+  OTHER_INCOME
+  OTHER_EXPENSE
+}
+
+enum AccountSubtype {
+  BANK
+  ACCOUNTS_RECEIVABLE
+  UNDEPOSITED_FUNDS
+  INVENTORY
+  WIP
+  FIXED_ASSET
+  OTHER_CURRENT_ASSET
+  ACCOUNTS_PAYABLE
+  CREDIT_CARD
+  SALES_TAX_PAYABLE
+  CUSTOMER_DEPOSITS
+  DEFERRED_REVENUE
+  PAYROLL_LIABILITY
+  OTHER_CURRENT_LIABILITY
+  LONG_TERM_LIABILITY
+  EQUITY
+  RETAINED_EARNINGS
+  OPENING_BALANCE_EQUITY
+  INCOME
+  CONTRA_INCOME
+  COST_OF_GOODS_SOLD
+  OPERATING_EXPENSE
+  OTHER
+}
+
+model Account {
+  id             String         @id @default(cuid())
+  organizationId String
+  code           String         // 1010, 4020 ...
+  name           String
+  type           AccountType
+  subtype        AccountSubtype @default(OTHER)
+  parentId       String?
+  description    String?
+  isActive       Boolean        @default(true)
+  isSystem       Boolean        @default(false) // seeded accounts posting rules depend on
+  // Bank reconciliation
+  bankAccountLast4 String?
+  externalId     String?
+  importBatchId  String?
+  createdAt      DateTime       @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  parent       Account?     @relation("AccountTree", fields: [parentId], references: [id])
+  children     Account[]    @relation("AccountTree")
+  importBatch  ImportBatch? @relation(fields: [importBatchId], references: [id])
+
+  journalLines    JournalLine[]
+  invoiceLines    InvoiceLine[]
+  billLines       VendorBillLine[]
+  vendors         Vendor[]
+  serviceTypes    ServiceType[]
+  stockLocations  StockLocation[]
+  depositBatches  DepositBatch[]
+  billPayments    BillPayment[]
+  reconciliations BankReconciliation[]
+  itemsIncome     PriceBookItem[] @relation("ItemIncomeAccount")
+  itemsCogs       PriceBookItem[] @relation("ItemCogsAccount")
+  itemsInventory  PriceBookItem[] @relation("ItemInventoryAccount")
+
+  @@unique([organizationId, code])
+  @@index([organizationId, type])
+}
+
+enum JournalSource {
+  MANUAL
+  INVOICE
+  PAYMENT
+  DEPOSIT
+  CREDIT_MEMO
+  VENDOR_BILL
+  BILL_PAYMENT
+  INVENTORY
+  PAYROLL
+  DEPRECIATION
+  OPENING_BALANCE
+  PERIOD_CLOSE
+  REVERSAL
+  TAX_REMITTANCE
+}
+
+// Posted entries are IMMUTABLE. Corrections are reversing entries, never edits.
+model JournalEntry {
+  id             String        @id @default(cuid())
+  organizationId String
+  entryNo        String
+  entryDate      DateTime      // accounting date
+  postedAt       DateTime?     // system time; null = unposted draft
+  source         JournalSource @default(MANUAL)
+  sourceType     String?       // "Invoice", "Payment", ...
+  sourceId       String?       // every GL line traces back to its document
+  memo           String?
+  periodId       String?
+  isReversal     Boolean       @default(false)
+  reversesEntryId String?
+  createdByUserId String?
+  importBatchId  String?
+  createdAt      DateTime      @default(now())
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  period       AccountingPeriod? @relation(fields: [periodId], references: [id])
+  reverses     JournalEntry?     @relation("EntryReversal", fields: [reversesEntryId], references: [id])
+  reversedBy   JournalEntry[]    @relation("EntryReversal")
+  importBatch  ImportBatch?      @relation(fields: [importBatchId], references: [id])
+
+  lines            JournalLine[]
+  invoices         Invoice[]
+  payments         Payment[]
+  creditMemos      CreditMemo[]
+  vendorBills      VendorBill[]
+  billPayments     BillPayment[]
+  depositBatches   DepositBatch[]
+  inventoryTxns    InventoryTransaction[]
+
+  @@unique([organizationId, entryNo])
+  @@index([organizationId, entryDate])
+  @@index([sourceType, sourceId])
+}
+
+// Dimensions on every line are what produce P&L by location and margin by job/tech
+// without a separate reporting warehouse.
+model JournalLine {
+  id             String  @id @default(cuid())
+  journalEntryId String
+  accountId      String
+  lineNo         Int
+  debitCents     BigInt  @default(0)
+  creditCents    BigInt  @default(0)
+  memo           String?
+
+  locationId    String?
+  jobId         String?
+  technicianId  String?
+  serviceTypeId String?
+  customerId    String?
+  vendorId      String?
+
+  journalEntry JournalEntry @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
+  account      Account      @relation(fields: [accountId], references: [id])
+  location     Location?    @relation(fields: [locationId], references: [id])
+  job          Job?         @relation(fields: [jobId], references: [id])
+  serviceType  ServiceType? @relation(fields: [serviceTypeId], references: [id])
+
+  @@index([journalEntryId])
+  @@index([accountId])
+  @@index([locationId])
+  @@index([jobId])
+}
+
+enum PeriodStatus {
+  OPEN
+  CLOSED
+  LOCKED
+}
+
+// A posting dated inside a CLOSED period is rejected. Reopening is an audited event.
+model AccountingPeriod {
+  id             String       @id @default(cuid())
+  organizationId String
+  fiscalYear     Int
+  periodNumber   Int          // 1-12
+  startDate      DateTime
+  endDate        DateTime
+  status         PeriodStatus @default(OPEN)
+  closedAt       DateTime?
+  closedByUserId String?
+  reopenedAt     DateTime?
+  reopenedByUserId String?
+
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  entries      JournalEntry[]
+
+  @@unique([organizationId, fiscalYear, periodNumber])
+  @@index([organizationId, startDate, endDate])
+}
+
+model BankReconciliation {
+  id              String    @id @default(cuid())
+  organizationId  String
+  accountId       String
+  statementDate   DateTime
+  openingBalanceCents BigInt
+  closingBalanceCents BigInt
+  clearedBalanceCents BigInt @default(0)
+  differenceCents BigInt    @default(0)
+  status          String    @default("IN_PROGRESS")
+  completedAt     DateTime?
+
+  account Account @relation(fields: [accountId], references: [id])
+
+  @@index([organizationId, accountId])
+}
+
+// ============================================================================
+// SALES TAX
+// ============================================================================
+
+model TaxJurisdiction {
+  id             String  @id @default(cuid())
+  organizationId String
+  name           String  // "AZ - Maricopa County - Mesa"
+  level          String  // STATE, COUNTY, CITY, SPECIAL
+  state          String?
+  county         String?
+  city           String?
+  liabilityAccountId String?
+  isActive       Boolean @default(true)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  rules      TaxRule[]
+  properties Property[]
+  invoiceTaxLines InvoiceTaxLine[]
+
+  @@index([organizationId])
+}
+
+// Whether LABOR is taxable differs by state and by repair vs. capital improvement.
+// This has to be a rules table, not a rate field.
+model TaxRule {
+  id                String   @id @default(cuid())
+  taxJurisdictionId String
+  rate              Decimal  @db.Decimal(8, 5)
+  effectiveFrom     DateTime
+  effectiveTo       DateTime?
+  taxLabor          Boolean  @default(false)
+  taxMaterials      Boolean  @default(true)
+  taxServiceAgreements Boolean @default(false)
+  taxFees           Boolean  @default(false)
+  notes             String?
+
+  taxJurisdiction TaxJurisdiction @relation(fields: [taxJurisdictionId], references: [id], onDelete: Cascade)
+
+  @@index([taxJurisdictionId, effectiveFrom])
+}
+
+// ============================================================================
+// PLATFORM — NUMBERING, AUDIT, IMPORT, OFFLINE SYNC
+// ============================================================================
+
+// Gapless, unique document numbers allocated inside the same transaction as the document,
+// so an invoice number is never reused or skipped.
+model DocumentSequence {
+  id             String @id @default(cuid())
+  organizationId String
+  docType        String // INVOICE, QUOTE, JOB, PO, BILL, PAYMENT, JE, ...
+  locationCode   String?
+  prefix         String @default("")
+  nextValue      Int    @default(1)
+  padding        Int    @default(5)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, docType, locationCode])
+}
+
+// Append-only. Every mutation, with actor, before/after, and device.
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String?
+  action         String   // CREATE, UPDATE, DELETE, POST, VOID, CLOSE_PERIOD, REOPEN_PERIOD, LOGIN
+  entityType     String
+  entityId       String
+  before         Json?
+  after          Json?
+  ipAddress      String?
+  userAgent      String?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id])
+
+  @@index([organizationId, createdAt])
+  @@index([entityType, entityId])
+}
+
+enum ImportStatus {
+  DRAFT
+  VALIDATING
+  VALIDATED
+  DRY_RUN
+  COMMITTING
+  COMPLETED
+  FAILED
+  ROLLED_BACK
+}
+
+model ImportBatch {
+  id             String       @id @default(cuid())
+  organizationId String
+  name           String
+  sourceSystem   String       // GENERIC_CSV, QUICKBOOKS, ...
+  entityType     String       // CUSTOMER, ITEM, INVOICE_OPEN, TRIAL_BALANCE, ...
+  status         ImportStatus @default(DRAFT)
+  fileName       String?
+  fileKey        String?
+  mappingId      String?
+  totalRows      Int          @default(0)
+  importedRows   Int          @default(0)
+  skippedRows    Int          @default(0)
+  errorRows      Int          @default(0)
+  // The reconciliation proof: source totals vs. imported totals.
+  sourceTotalCents   BigInt?
+  importedTotalCents BigInt?
+  isBalanced     Boolean      @default(false)
+  errorReport    Json?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  rolledBackAt   DateTime?
+  createdByUserId String?
+  createdAt      DateTime     @default(now())
+
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  mapping      ImportMapping?  @relation(fields: [mappingId], references: [id])
+
+  customers      Customer[]
+  priceBookItems PriceBookItem[]
+  jobs           Job[]
+  invoices       Invoice[]
+  payments       Payment[]
+  vendors        Vendor[]
+  vendorBills    VendorBill[]
+  accounts       Account[]
+  journalEntries JournalEntry[]
+
+  @@index([organizationId, status])
+}
+
+// Saved, reusable column mappings. The AI proposes one; the user confirms it.
+model ImportMapping {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  sourceSystem   String
+  entityType     String
+  // { "Customer Name": "companyName", "Bill Addr Line 1": "billingAddress1", ... }
+  fieldMap       Json
+  transforms     Json?    // date formats, currency parsing, value lookups
+  createdAt      DateTime @default(now())
+
+  batches ImportBatch[]
+
+  @@index([organizationId, entityType])
+}
+
+enum SyncStatus {
+  PENDING
+  APPLIED
+  CONFLICT
+  REJECTED
+}
+
+// The offline outbox. A tech's device queues mutations while out of signal; they are
+// replayed in order on reconnect, with idempotency keys so a retry never double-posts.
+model SyncOperation {
+  id             String     @id @default(cuid())
+  organizationId String
+  userId         String
+  deviceId       String
+  clientOpId     String     // idempotency key generated on the device
+  sequence       Int        // per-device ordering
+  entityType     String
+  entityId       String?
+  operation      String     // CREATE, UPDATE, DELETE
+  payload        Json
+  baseVersion    Int?       // optimistic concurrency against the server record
+  status         SyncStatus @default(PENDING)
+  conflictReason String?
+  resolvedPayload Json?
+  clientTimestamp DateTime
+  receivedAt     DateTime   @default(now())
+  appliedAt      DateTime?
+
+  @@unique([deviceId, clientOpId])
+  @@index([organizationId, status])
+  @@index([userId, sequence])
+}
+
+model Notification {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String?
+  channel        String   // IN_APP, SMS, EMAIL, PUSH
+  template       String   // APPOINTMENT_REMINDER, TECH_EN_ROUTE, QUOTE_APPROVED, LICENSE_EXPIRING
+  recipient      String?
+  subject        String?
+  body           String?
+  entityType     String?
+  entityId       String?
+  status         String   @default("QUEUED")
+  scheduledFor   DateTime?
+  sentAt         DateTime?
+  error          String?
+  createdAt      DateTime @default(now())
+
+  @@index([organizationId, status, scheduledFor])
+}
