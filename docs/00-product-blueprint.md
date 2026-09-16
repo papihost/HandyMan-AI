@@ -147,11 +147,12 @@ cost. Here is what is missing from that list and why each one matters in practic
 
 ### Structural decisions to make before the first line of accounting code
 21. **Are your locations separate legal entities or departments of one company?**
-    This is the first question a controller will ask. If separate entities: separate books,
-    intercompany transactions, consolidated reporting. If departments: one set of books with
-    a `location` dimension on every journal line and per-location P&L via segmentation.
-    *Recommendation for the demo: one legal entity, locations as a GL dimension, with the
-    schema built so multi-entity is an additive change rather than a rewrite.*
+    This is the first question a controller will ask, and it has been answered:
+    **one legal entity, locations as a GL dimension.** Every journal line carries
+    `locationId`, so per-location P&L and the consolidated P&L are the same query with a
+    different filter. No intercompany, no separate books.
+    The schema keeps multi-entity an additive change rather than a rewrite — a future
+    `entityId` would sit above `locationId` — but nothing is built for it today.
 22. **Inventory costing method** — average cost (simpler, recommended) vs. FIFO. It changes
     how COGS posts and cannot be switched casually later.
 23. **Accrual vs. cash basis reporting** — build accrual, and generate cash-basis reports as a

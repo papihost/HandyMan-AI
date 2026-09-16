@@ -22,7 +22,7 @@ accounting system built in**. No QuickBooks sync, no external ledger — the boo
 
 ## Data model
 
-`prisma/schema.prisma` — 68 models covering tenancy and RBAC, CRM and properties, the price
+`prisma/schema.prisma` — 69 models covering tenancy and RBAC, CRM and properties, the price
 book, jobs and field work, multi-warehouse and van inventory, purchasing and AP, invoicing and
 AR, the general ledger, sales tax, audit, the import pipeline, and the offline sync outbox.
 
@@ -47,7 +47,50 @@ npx prisma db push
 npm run db:seed               # seeds the Apex Handyman demo company
 ```
 
+## Testing
+
+```bash
+npm test          # 85 tests: unit + integration against Postgres
+npm run typecheck
+```
+
+Integration tests run against a real database rather than a mock, because the guarantees
+under test *are* database guarantees — deferred balance constraints, immutability triggers,
+and row locks on the document-number sequence. A mock would prove nothing about any of them.
+
 ## Status
 
-Foundation stage: architecture, accounting design, and data model are complete and the schema
-validates. Application code is next — see the build order in the blueprint.
+**Built:** data model (69 models), authentication and RBAC with two-layer isolation, the
+double-entry posting engine, period control, document numbering, posting rules for
+invoicing, payments, inventory and labor, and ledger-backed reporting (trial balance,
+income statement, balance sheet, P&L by branch).
+
+**Next:** customers and price book, jobs and quoting, invoicing, inventory with van stock,
+the offline field PWA, the import wizard, and the demo seed. See the build order in the
+blueprint.
+
+## Architecture notes
+
+### Two-layer access control
+
+`scopedDb(client, ctx)` returns a Prisma client bound to one caller. Every read and write
+on every model with an `organizationId` gets the caller's organization injected into its
+filter, and every create gets it stamped on — so a handler that forgets a `where` clause
+cannot leak another company's data, and a create cannot write into another tenant even if
+it is told to.
+
+The same extension removes cost and margin columns from the *query* for callers without
+`finance:read_cost`. A technician's request never fetches `costCents`, so the value is
+never serialized, never logged, and never sits in a payload waiting for someone to open
+dev tools. Handlers still check permissions explicitly; this exists so that one which
+forgets is contained rather than catastrophic.
+
+### Sessions
+
+Opaque 256-bit random tokens; only the SHA-256 hash is stored. Passwords use scrypt from
+Node's standard library — memory-hard, and no native module to fail at install. Sign-in
+failures are deliberately indistinguishable across unknown email, wrong password,
+deactivated and locked accounts, and all pay the same hashing cost, so none of it is a
+user-enumeration oracle.
+
+Field devices get 30-day sessions: a technician in a crawl space cannot re-authenticate.

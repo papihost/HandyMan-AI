@@ -175,3 +175,53 @@ turns, WIP aging, unbilled completed jobs (money sitting on the table).
   transaction so an invoice number is never reused or skipped.
 - Every posting carries `sourceType` + `sourceId`, so any GL line can be traced back to the
   job, invoice, or bill that created it — and every document can show its resulting entry.
+
+---
+
+## 8. Implementation notes
+
+The posting engine is `src/lib/accounting/ledger.ts`. Nothing else in the system writes to
+`JournalEntry` or `JournalLine`, which is what makes the guarantees below unconditional
+rather than a convention.
+
+**Posting rules are pure functions.** Each rule in `src/lib/accounting/rules/` takes a
+business event and returns journal lines — no database, no clock, no auth context. Every
+row of the posting table in §3 is therefore unit-testable against expected debits and
+credits, and the table above is executable documentation rather than a wish. The caller
+hands the lines to `postJournalEntry` inside the same transaction as the document that
+produced them.
+
+**The guarantees are enforced twice.** The application layer validates so that errors are
+legible; the database enforces so that the guarantee does not depend on every future code
+path remembering to ask. From `prisma/migrations/*_ledger_guards`:
+
+| Guarantee | Database mechanism |
+|---|---|
+| A line is a debit or a credit, never both, never negative | `CHECK` constraints on `JournalLine` |
+| Debits equal credits on every posted entry | Deferred `CONSTRAINT TRIGGER`, verified at `COMMIT` |
+| A posted entry has at least two lines | Same deferred trigger |
+| Posted entries and their lines can never be altered or deleted | `BEFORE UPDATE OR DELETE` triggers |
+| The audit log is append-only | `BEFORE UPDATE OR DELETE` trigger that always raises |
+
+The balance check is *deferred* so lines can be inserted one at a time inside a
+transaction and verified once at commit. An unbalanced entry cannot reach a committed
+state, whatever wrote it — including a direct `psql` session.
+
+**Period locking** is a single choke point: `assertPostingAllowed` resolves the period for
+an entry date and refuses anything that is not `OPEN`. Closing a period requires every
+earlier period to be closed first, so a correction cannot be slipped in behind a month
+that has already been reported. Reopening requires `period:reopen`, demands a reason, and
+writes an audit record. `LOCKED` is permanent.
+
+**Document numbering** allocates inside the caller's transaction with `SELECT … FOR
+UPDATE` on the sequence row, so a rollback returns the number to the pool and concurrent
+callers serialize. The scope column uses an empty string rather than `NULL` for
+"organization-wide": Postgres treats `NULL`s as distinct in a unique index, so a nullable
+column would have let concurrent allocators each create their own sequence row and issue
+the same invoice number twice.
+
+**Reporting reads the ledger.** `src/lib/accounting/reports.ts` computes the trial balance,
+income statement, balance sheet and P&L-by-branch from posted journal lines. Nothing is
+cached in a summary table and nothing is derived from document totals, because the moment
+a reported number can disagree with the general ledger, the general ledger has stopped
+being the system of record.
