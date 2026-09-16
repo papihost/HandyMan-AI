@@ -1,11 +1,16 @@
+import type { LineCategory } from '@prisma/client';
 import { ValidationError } from '../../errors';
 import { sum, ZERO, type Cents } from '../../money';
 import { ACCOUNTS } from '../chart-of-accounts';
 import type { PostingLine } from '../ledger';
 
 export interface InvoiceRevenueLine {
-  /** Which revenue account this line belongs in. Labor and materials are reported separately. */
-  category: 'LABOR' | 'MATERIALS' | 'AGREEMENT' | 'FEE';
+  /**
+   * Which revenue account this line belongs in. The same categorisation decides the
+   * line's sales-tax treatment, so revenue reporting and tax can never disagree about
+   * what a line is.
+   */
+  category: LineCategory;
   amountCents: Cents;
   /** Overrides the category default, for customers who split revenue further. */
   revenueAccountCode?: string;
@@ -34,11 +39,13 @@ export interface InvoicePostingInput {
   depositAppliedCents?: Cents;
 }
 
-const REVENUE_ACCOUNT: Record<InvoiceRevenueLine['category'], string> = {
+const REVENUE_ACCOUNT: Record<LineCategory, string> = {
   LABOR: ACCOUNTS.REVENUE_LABOR,
-  MATERIALS: ACCOUNTS.REVENUE_MATERIALS,
+  MATERIAL: ACCOUNTS.REVENUE_MATERIALS,
   AGREEMENT: ACCOUNTS.REVENUE_AGREEMENTS,
   FEE: ACCOUNTS.REVENUE_FEES,
+  // Subcontracted work is still revenue to us; its cost lands in 5040.
+  SUBCONTRACT: ACCOUNTS.REVENUE_LABOR,
 };
 
 /**

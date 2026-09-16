@@ -14,6 +14,7 @@ import type { Tx } from '../db';
 
 export type DocumentType =
   | 'JOURNAL_ENTRY'
+  | 'CUSTOMER'
   | 'INVOICE'
   | 'QUOTE'
   | 'JOB'
@@ -29,6 +30,7 @@ export type DocumentType =
 
 const DEFAULT_PREFIX: Record<DocumentType, string> = {
   JOURNAL_ENTRY: 'JE-',
+  CUSTOMER: 'C-',
   INVOICE: 'INV-',
   QUOTE: 'Q-',
   JOB: 'J-',

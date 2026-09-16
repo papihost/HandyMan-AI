@@ -143,3 +143,99 @@ export async function createTestJob(
 
   return { jobId: job.id, customerId: customer.id, propertyId: property.id };
 }
+
+/** A jurisdiction that taxes labor and materials at 8.3%, the way Arizona does. */
+export async function createTaxJurisdiction(
+  organizationId: string,
+  opts: { rate?: string; taxLabor?: boolean; name?: string } = {},
+): Promise<string> {
+  const jurisdiction = await db.taxJurisdiction.create({
+    data: {
+      organizationId,
+      name: opts.name ?? 'AZ — Maricopa — Mesa',
+      level: 'CITY',
+      state: 'AZ',
+      city: 'Mesa',
+      rules: {
+        create: {
+          rate: opts.rate ?? '0.0830',
+          effectiveFrom: new Date(Date.UTC(2020, 0, 1)),
+          taxLabor: opts.taxLabor ?? true,
+          taxMaterials: true,
+          taxServiceAgreements: false,
+          taxFees: false,
+        },
+      },
+    },
+  });
+  return jurisdiction.id;
+}
+
+export async function createPriceBookItem(
+  organizationId: string,
+  opts: {
+    sku?: string;
+    name: string;
+    category: 'LABOR' | 'MATERIAL' | 'AGREEMENT' | 'FEE' | 'SUBCONTRACT';
+    kind?: 'PART' | 'MATERIAL' | 'LABOR' | 'FLAT_RATE' | 'FEE' | 'SUBCONTRACT';
+    costCents: bigint;
+    priceCents: bigint;
+    isTaxExempt?: boolean;
+  },
+): Promise<string> {
+  const item = await db.priceBookItem.create({
+    data: {
+      organizationId,
+      sku: opts.sku ?? `SKU-${randomUUID().slice(0, 8)}`,
+      name: opts.name,
+      kind: opts.kind ?? (opts.category === 'LABOR' ? 'LABOR' : 'PART'),
+      category: opts.category,
+      costCents: opts.costCents,
+      priceCents: opts.priceCents,
+      isTaxExempt: opts.isTaxExempt ?? false,
+      isStocked: opts.category === 'MATERIAL',
+    },
+  });
+  return item.id;
+}
+
+export async function createTestTechnician(
+  organizationId: string,
+  locationId: string,
+): Promise<{ technicianId: string; userId: string }> {
+  const user = await createTestUser(organizationId, {
+    roleKey: 'TECHNICIAN',
+    locationIds: [locationId],
+  });
+
+  const technician = await db.technician.create({
+    data: {
+      organizationId,
+      userId: user.userId,
+      payType: 'HOURLY',
+      burdenRates: {
+        create: {
+          effectiveFrom: new Date(Date.UTC(2020, 0, 1)),
+          baseHourlyCents: 2800n,
+          payrollTaxRate: '0.0765',
+          workersCompRate: '0.08',
+          benefitsRate: '0.06',
+          vehicleMonthlyCents: 85000n,
+          phoneMonthlyCents: 6000n,
+          billableHoursPerMonth: '140',
+          loadedHourlyCents: 4056n,
+        },
+      },
+    },
+  });
+
+  return { technicianId: technician.id, userId: user.userId };
+}
+
+/** Attach a jurisdiction to a property so tax resolves on the service address. */
+export async function setPropertyJurisdiction(
+  propertyId: string,
+  taxJurisdictionId: string,
+): Promise<void> {
+  await db.property.update({ where: { id: propertyId }, data: { taxJurisdictionId } });
+}

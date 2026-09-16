@@ -400,7 +400,7 @@ describe('reporting from the ledger', () => {
         jobId: mesaJob.jobId,
         revenueLines: [
           { category: 'LABOR', amountCents: 45000n },
-          { category: 'MATERIALS', amountCents: 20000n },
+          { category: 'MATERIAL', amountCents: 20000n },
         ],
         taxes: [{ taxCents: 1650n, jurisdictionName: 'Mesa' }],
       }),

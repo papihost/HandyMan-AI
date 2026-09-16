@@ -32,7 +32,7 @@ describe('invoice issued', () => {
       ...base,
       revenueLines: [
         { category: 'LABOR', amountCents: 45000n },
-        { category: 'MATERIALS', amountCents: 20000n },
+        { category: 'MATERIAL', amountCents: 20000n },
       ],
       taxes: [{ taxCents: 1650n, jurisdictionName: 'Mesa', liabilityAccountCode: '2100' }],
     });

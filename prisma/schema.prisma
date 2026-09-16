@@ -333,6 +333,12 @@ model Customer {
   lastName       String?
   email          String?
   phone          String?
+  /**
+   * Digits only, with a US country code stripped. Formatting is not consistent in the
+   * wild — "(480) 555-0142", "480.555.0142" and "+1 480 555 0142" are the same number —
+   * so duplicate detection matches on this, not on what was typed.
+   */
+  phoneNormalized String?
   altPhone       String?
   billingAddress1 String?
   billingAddress2 String?
@@ -368,6 +374,7 @@ model Customer {
   @@unique([organizationId, customerNo])
   @@index([organizationId, lastName])
   @@index([organizationId, externalId])
+  @@index([organizationId, phoneNormalized])
 }
 
 // A customer may own several service addresses. Service history attaches to the property,
@@ -457,6 +464,19 @@ model ServiceType {
   @@unique([organizationId, code])
 }
 
+/**
+ * How a line is treated for revenue recognition and for sales tax. One field rather than
+ * two, because the split that decides which revenue account a line credits is the same
+ * split a tax jurisdiction uses to decide whether it is taxable.
+ */
+enum LineCategory {
+  LABOR
+  MATERIAL
+  AGREEMENT
+  FEE
+  SUBCONTRACT
+}
+
 enum PriceItemKind {
   PART          // stocked inventory
   MATERIAL      // consumable, may or may not be stocked
@@ -483,8 +503,9 @@ model PriceBookItem {
   // Flat-rate tasks bundle labor + materials
   estimatedHours Decimal? @db.Decimal(6, 2)
 
-  isTaxableLabor    Boolean @default(false)
-  isTaxableMaterial Boolean @default(true)
+  category      LineCategory @default(MATERIAL)
+  /** Always exempt regardless of jurisdiction — e.g. a permit passed through at cost. */
+  isTaxExempt   Boolean      @default(false)
 
   // Inventory behaviour
   isStocked      Boolean @default(false)
@@ -669,11 +690,12 @@ model QuoteOption {
 }
 
 model QuoteLine {
-  id              String   @id @default(cuid())
+  id              String       @id @default(cuid())
   quoteId         String
   quoteOptionId   String?
   priceBookItemId String?
-  sortOrder       Int      @default(0)
+  sortOrder       Int          @default(0)
+  category        LineCategory @default(MATERIAL)
   description     String
   quantity        Decimal  @db.Decimal(12, 3)
   unitPriceCents  BigInt
@@ -733,6 +755,7 @@ model Job {
   isBillable     Boolean @default(true)
 
   agreementId    String?
+  sourceQuoteId  String?  @unique
   requestedAt    DateTime?
   scheduledStart DateTime?
   scheduledEnd   DateTime?
@@ -824,11 +847,12 @@ model JobAssignment {
 // Work actually performed / parts actually used. This is what becomes the invoice
 // and what drives COGS — distinct from the quote, which was only a proposal.
 model JobLine {
-  id              String   @id @default(cuid())
+  id              String       @id @default(cuid())
   jobId           String
   changeOrderId   String?
   priceBookItemId String?
-  sortOrder       Int      @default(0)
+  sortOrder       Int          @default(0)
+  category        LineCategory @default(MATERIAL)
   description     String
   quantity        Decimal  @db.Decimal(12, 3)
   unitPriceCents  BigInt
@@ -837,6 +861,7 @@ model JobLine {
   isTaxable       Boolean  @default(true)
   totalCents      BigInt   @default(0)
   isBilled        Boolean  @default(false)
+  invoiceId       String?
 
   job           Job            @relation(fields: [jobId], references: [id], onDelete: Cascade)
   changeOrder   ChangeOrder?   @relation(fields: [changeOrderId], references: [id])
@@ -1457,11 +1482,12 @@ model Invoice {
 }
 
 model InvoiceLine {
-  id              String   @id @default(cuid())
+  id              String       @id @default(cuid())
   invoiceId       String
   priceBookItemId String?
   revenueAccountId String?
-  sortOrder       Int      @default(0)
+  sortOrder       Int          @default(0)
+  category        LineCategory @default(MATERIAL)
   description     String
   quantity        Decimal  @db.Decimal(12, 3)
   unitPriceCents  BigInt
@@ -1719,6 +1745,8 @@ model JournalEntry {
   @@unique([organizationId, entryNo])
   @@index([organizationId, entryDate])
   @@index([sourceType, sourceId])
+  // Created in the ledger_guards migration; declared here so a schema diff never drops it.
+  @@index([organizationId, postedAt], map: "JournalEntry_org_posted_idx")
 }
 
 // Dimensions on every line are what produce P&L by location and margin by job/tech
@@ -1749,6 +1777,7 @@ model JournalLine {
   @@index([accountId])
   @@index([locationId])
   @@index([jobId])
+  @@index([accountId, journalEntryId], map: "JournalLine_account_entry_idx")
 }
 
 enum PeriodStatus {

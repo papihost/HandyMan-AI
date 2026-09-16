@@ -50,7 +50,7 @@ npm run db:seed               # seeds the Apex Handyman demo company
 ## Testing
 
 ```bash
-npm test          # 85 tests: unit + integration against Postgres
+npm test          # 119 tests: unit + integration against Postgres
 npm run typecheck
 ```
 
@@ -60,14 +60,30 @@ and row locks on the document-number sequence. A mock would prove nothing about 
 
 ## Status
 
-**Built:** data model (69 models), authentication and RBAC with two-layer isolation, the
-double-entry posting engine, period control, document numbering, posting rules for
-invoicing, payments, inventory and labor, and ledger-backed reporting (trial balance,
-income statement, balance sheet, P&L by branch).
+**Built**
 
-**Next:** customers and price book, jobs and quoting, invoicing, inventory with van stock,
-the offline field PWA, the import wizard, and the demo seed. See the build order in the
-blueprint.
+- Data model — 69 models.
+- Authentication and RBAC, with tenant scoping and cost redaction enforced at the
+  data-access layer.
+- Double-entry posting engine, period control, gapless document numbering, and
+  database-level ledger guards.
+- Posting rules for invoicing, payments, inventory movements and labor with burden.
+- Ledger-backed reporting: trial balance, income statement, balance sheet, P&L by branch.
+- Customers and properties, with duplicate detection.
+- Price book with location and customer-tier price resolution.
+- Sales tax as a per-jurisdiction rules engine, resolved on the service address.
+- Quoting with good/better/best option sets, e-signature approval, and conversion to a job.
+- Jobs with an explicit lifecycle state machine.
+- Invoicing that posts itself to the ledger, deposits held as a liability until earned,
+  payments, and AR aging.
+- Job costing read from the general ledger rather than from a summary table.
+
+The full path is covered end to end by `tests/workflow.test.ts`: a quote approved in the
+field becomes a job, the job becomes an invoice, the invoice posts to the general ledger,
+and the margin on that job is read back off the same journal lines the P&L is built from.
+
+**Next:** inventory with van stock, the offline field PWA, the import wizard, and the demo
+seed. See the build order in the blueprint.
 
 ## Architecture notes
 

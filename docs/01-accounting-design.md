@@ -225,3 +225,33 @@ income statement, balance sheet and P&L-by-branch from posted journal lines. Not
 cached in a summary table and nothing is derived from document totals, because the moment
 a reported number can disagree with the general ledger, the general ledger has stopped
 being the system of record.
+
+## 9. Document flow
+
+```
+Quote  ──approve (signature)──▶  Job  ──work performed──▶  Invoice  ──issue──▶  Journal Entry
+  │                               │                          │                      │
+  │ posts nothing                 │ accrues actual cost      │ computes tax         │ AR / revenue /
+  │ (a proposal, not revenue)     │ (labor, parts, subs)     │ on service address   │ sales tax payable
+```
+
+Three properties hold across that chain:
+
+1. **A quote posts nothing.** Revenue is recognized when work is invoiced, not when it is
+   offered. The quote's cost figure exists only so quoted-versus-actual margin is
+   answerable later.
+2. **Job lines are copied from the quote, not referenced.** The quote records what was
+   proposed; the job records what was done. They diverge the moment anything changes on
+   site, and keeping both is the only way to learn whether the estimate was any good.
+3. **A job line is billed exactly once.** A draft invoice claims its lines as it is
+   created, so a second invoice cannot pick up the same work. Progress billing is simply
+   an invoice that claims some of the lines and leaves the rest.
+
+**Tax is computed on the aggregate, then allocated.** Rounding each line separately drifts
+from the invoice total by a cent or two, and a customer who adds up the lines and gets a
+different answer will call about it. One rounding on the taxable base, spread across the
+taxable lines by weight, with any remainder pushed onto the first of them.
+
+**Margin never includes tax.** Sales tax is collected on behalf of the state; it is a
+liability from the moment it is charged and it is not revenue. Job costing reports net
+revenue for the same reason.
