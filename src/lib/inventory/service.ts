@@ -33,6 +33,17 @@ export interface StockLine {
   unitCostCents?: Cents;
 }
 
+/**
+ * Lock stock level rows in a consistent order.
+ *
+ * Two technicians closing out jobs at the same time, from the same van, touching the same
+ * two parts in opposite order, would each hold the lock the other needs. Ordering by item
+ * makes that impossible: whoever gets the first row gets both.
+ */
+function sortedByItem(lines: readonly StockLine[]): StockLine[] {
+  return [...lines].sort((a, b) => a.priceBookItemId.localeCompare(b.priceBookItemId));
+}
+
 /** The GL account each kind of stock location rolls up to. */
 function glKind(kind: StockLocationKind): 'WAREHOUSE' | 'VAN' {
   return kind === 'VAN' ? 'VAN' : 'WAREHOUSE';
@@ -140,7 +151,7 @@ export async function receiveStock(db: PrismaClient, ctx: AuthContext, input: Re
     const occurredAt = input.occurredAt ?? new Date();
     let totalCost = ZERO;
 
-    for (const line of input.lines) {
+    for (const line of sortedByItem(input.lines)) {
       const qtyMilli = toMilli(line.quantity);
       if (qtyMilli <= 0n) throw new ValidationError('Receipt quantity must be positive');
       if (line.unitCostCents === undefined) {
@@ -229,7 +240,7 @@ export async function transferStock(db: PrismaClient, ctx: AuthContext, input: T
     const occurredAt = input.occurredAt ?? new Date();
     let totalCost = ZERO;
 
-    for (const line of input.lines) {
+    for (const line of sortedByItem(input.lines)) {
       const qtyMilli = toMilli(line.quantity);
       if (qtyMilli <= 0n) throw new ValidationError('Transfer quantity must be positive');
 
@@ -322,6 +333,12 @@ export interface ConsumePartsInput {
   lines: StockLine[];
   occurredAt?: Date;
   technicianId?: string;
+  /**
+   * Skip refreshing the job's cached cost columns. The caller is responsible for doing it
+   * once afterwards — used when several postings land on the same job in a row and the
+   * intermediate roll-ups would be thrown away anyway.
+   */
+  deferRollup?: boolean;
 }
 
 /**
@@ -352,7 +369,7 @@ export async function consumePartsForJob(
     const occurredAt = input.occurredAt ?? new Date();
     let totalCost = ZERO;
 
-    for (const line of input.lines) {
+    for (const line of sortedByItem(input.lines)) {
       const qtyMilli = toMilli(line.quantity);
       if (qtyMilli <= 0n) throw new ValidationError('Consumption quantity must be positive');
 
@@ -416,7 +433,9 @@ export async function consumePartsForJob(
     return { totalCostCents: totalCost, journalEntryId: entry.id, jobId: job.id };
   });
 
-  await refreshJobRollup(db, systemContext(ctx.organizationId, ctx.userId), result.jobId);
+  if (!input.deferRollup) {
+    await refreshJobRollup(db, systemContext(ctx.organizationId, ctx.userId), result.jobId);
+  }
   return result;
 }
 

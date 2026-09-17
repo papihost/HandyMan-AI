@@ -175,3 +175,41 @@ export function cycleCountVarianceLines(input: {
     { accountCode: ACCOUNTS.INVENTORY_SHRINKAGE, creditCents: magnitude, memo, ...dimensions },
   ];
 }
+
+/**
+ * Materials bought for a job and never stocked — the technician stops at the supply house
+ * on the way, photographs the receipt, and it becomes a payable costed straight to the job.
+ *
+ * This never touches inventory: the parts were bought for one job and consumed on it, so
+ * receiving them into stock and immediately relieving them would be two lies that cancel.
+ *
+ *   Dr  COGS — Materials & Parts
+ *     Cr  Accounts Payable
+ */
+export function directJobPurchaseLines(input: {
+  jobId: string;
+  locationId: string;
+  vendorId?: string | null;
+  technicianId?: string | null;
+  serviceTypeId?: string | null;
+  amountCents: Cents;
+  reference?: string;
+}): PostingLine[] {
+  if (input.amountCents <= ZERO) {
+    throw new ValidationError('A job purchase must be a positive amount');
+  }
+
+  const dimensions = {
+    locationId: input.locationId,
+    jobId: input.jobId,
+    vendorId: input.vendorId ?? null,
+    technicianId: input.technicianId ?? null,
+    serviceTypeId: input.serviceTypeId ?? null,
+  };
+  const memo = input.reference ? `Job materials — ${input.reference}` : 'Job materials';
+
+  return [
+    { accountCode: ACCOUNTS.COGS_MATERIALS, debitCents: input.amountCents, memo, ...dimensions },
+    { accountCode: ACCOUNTS.AP, creditCents: input.amountCents, memo, ...dimensions },
+  ];
+}

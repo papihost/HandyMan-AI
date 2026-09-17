@@ -85,19 +85,23 @@ describe('sign-in', () => {
   it('gives the same message for an unknown email and a wrong password', async () => {
     const user = await createTestUser(org.organizationId, { roleKey: 'DISPATCHER' });
 
-    const unknown = signIn(db, {
-      organizationId: org.organizationId,
-      email: 'nobody@test.local',
-      password: 'whatever-long-enough',
-    });
-    const wrong = signIn(db, {
-      organizationId: org.organizationId,
-      email: user.email,
-      password: 'wrong-password-here',
-    });
+    // Awaited one at a time: starting both and awaiting the second later leaves its
+    // rejection unhandled for a tick, which Vitest reports as an unhandled rejection.
+    await expect(
+      signIn(db, {
+        organizationId: org.organizationId,
+        email: 'nobody@test.local',
+        password: 'whatever-long-enough',
+      }),
+    ).rejects.toThrow('Email or password is incorrect');
 
-    await expect(unknown).rejects.toThrow('Email or password is incorrect');
-    await expect(wrong).rejects.toThrow('Email or password is incorrect');
+    await expect(
+      signIn(db, {
+        organizationId: org.organizationId,
+        email: user.email,
+        password: 'wrong-password-here',
+      }),
+    ).rejects.toThrow('Email or password is incorrect');
   });
 
   it('locks the account after repeated failures', async () => {

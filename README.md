@@ -43,14 +43,50 @@ for offline field work · object storage for job photos.
 ```bash
 npm install
 cp .env.example .env          # point DATABASE_URL at your Postgres
-npx prisma db push
-npm run db:seed               # seeds the Apex Handyman demo company
+npm run db:deploy             # apply migrations
+npm run db:seed               # build the Apex Handyman demo company
 ```
+
+### The demo company
+
+`npm run db:seed` builds **Apex Handyman Services** — three branches (Phoenix, Mesa,
+Scottsdale), fourteen technicians with their own vans, ~600 customers, and twelve months of
+trading history.
+
+```bash
+npm run db:seed                  # volume derived from headcount and utilization
+DEMO_JOBS=300 npm run db:seed    # smaller and faster, for development
+DEMO_SEED=42 npm run db:seed     # a different but equally reproducible company
+```
+
+Every financial figure is produced by the same posting engine the product uses. No journal
+entry is written directly and no dashboard number is a fixture — the first thing a
+prospect's controller does is drill into a figure, and if the trail ends at hardcoded data
+the demo is over.
+
+Three things the seed gets right that a naive one would not:
+
+- **Volume is derived from headcount.** Fourteen technicians, 173 paid hours a month and a
+  62% utilization rate determine how much work there has to be. A job count picked out of
+  the air leaves technicians 97% idle and produces an income statement nobody believes.
+- **Unbilled technician time is costed.** Drive time, shop time and the gaps between calls
+  are paid, so they are cost of providing the service. Costing only billable hours is the
+  most flattering mistake a field service system can make: it reports gross margins in the
+  seventies for a trade that runs in the forties.
+- **Operating expenses are posted.** Rent, advertising, office payroll, vehicles, insurance
+  and depreciation, monthly, per branch where they belong to a branch. Without them net
+  income equals gross profit and the P&L is obviously fake.
+
+Sign in as any seeded user with the password printed by the seed. `diane.kowalczyk@` is the
+controller (full ledger), `marcus.deleon@` is a technician (no cost, own jobs only).
+
+Resetting is safe by construction: it refuses on any organization whose `dataMode` is not
+`DEMO`, so a sales reset cannot reach a customer's real books.
 
 ## Testing
 
 ```bash
-npm test          # 146 tests: unit + integration against Postgres
+npm test          # 169 tests: unit + integration against Postgres
 npm run typecheck
 ```
 
@@ -81,6 +117,11 @@ and row locks on the document-number sequence. A mock would prove nothing about 
   locks, transfers, consumption to COGS on a job, cycle counts with shrinkage, reorder
   suggestions, and a valuation that is asserted equal to the inventory accounts in the
   general ledger.
+- Purchasing and payables: a technician's supply-house receipt becomes a vendor bill coded
+  straight to the job, subcontracted work posts to its own account, and bills are paid in
+  runs.
+- The Apex Handyman demo company: three branches, fourteen technicians, ~4,500 jobs across
+  twelve months, ~18,000 journal entries — all produced by the posting engine above.
 
 The full path is covered end to end by `tests/workflow.test.ts`: a quote approved in the
 field becomes a job, the job becomes an invoice, the invoice posts to the general ledger,

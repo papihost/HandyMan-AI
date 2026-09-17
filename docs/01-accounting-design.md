@@ -293,3 +293,50 @@ into a phantom variance. Shortages debit 5090 Inventory Shrinkage; overages cred
 The subledger and the general ledger are asserted equal: `inventoryValuation()` and the
 1300 + 1310 balances on the trial balance must agree to the penny. If they ever disagree,
 one of them is wrong and nobody can tell which.
+
+## 11. Job purchases and payables
+
+The case that matters in the field is small and constant: a technician is mid-job, needs a
+part nobody stocks, buys it at the supply house and photographs the receipt.
+
+That purchase never touches inventory. Receiving it into stock and relieving it moments
+later would be two lies that cancel, and it would corrupt the moving average of an item
+that was bought at a one-off price for one job. It posts directly:
+
+```
+Dr  5030 COGS — Materials & Parts     coded to the job
+  Cr  2010 Accounts Payable           coded to the vendor
+```
+
+Subcontracted work posts the same shape to 5040 instead, and the vendor is flagged for
+1099 reporting.
+
+If this does not become a cost against the job within a minute of happening, it is either
+lost entirely or lands next month against nothing in particular — and the job's margin is
+wrong either way. Roughly a third of jobs in the seeded company carry one, which is what
+moves its gross margin from a flattering 59% to a realistic 48%.
+
+## 12. Why the demo company's numbers are believable
+
+Three corrections separate a seeded dataset that survives a controller's questions from one
+that does not. All three are in `src/lib/demo/seed.ts`.
+
+**Volume follows headcount.** Fourteen technicians × 173 paid hours × 12 months × 62%
+utilization ÷ 3.6 hours a job determines how many jobs there have to be. A job count chosen
+by feel leaves technicians 97% idle, and the income statement that falls out of that is
+absurd — which is how the arithmetic tells you the number was wrong.
+
+**Unbilled technician time is costed.** Drive time, shop time, restocking and the gaps
+between calls are paid, and they are cost of providing the service. Posting only billable
+hours to COGS is the most flattering mistake a field-service system can make: it reports
+gross margins in the seventies for a trade that runs in the forties, and an owner who
+prices off that number loses money on every job.
+
+**Overhead is posted.** Rent, advertising, office payroll, vehicles, insurance, software and
+depreciation, monthly, attributed to a branch where they belong to one. Company overhead is
+deliberately left unallocated: spreading it across branches would make branch profit a
+function of the allocation formula rather than of the branch.
+
+The result is a company with roughly 48% gross margin and a net margin in the low teens —
+which is what a well-run three-branch handyman operation actually looks like, and which is
+the point at which the numbers stop being a demo and start being an argument.

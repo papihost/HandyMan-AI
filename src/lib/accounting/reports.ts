@@ -261,6 +261,7 @@ export async function profitByLocation(
   }
 
   return [...totals.entries()]
+    .filter(([, { revenue, cogs }]) => revenue !== ZERO || cogs !== ZERO)
     .map(([locationId, { revenue, cogs }]) => {
       const grossProfit = revenue - cogs;
       return {

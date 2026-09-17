@@ -60,3 +60,48 @@ natural-language reporting: *"gross margin on drywall work in Phoenix last quart
 
 *The close:* "Three systems and a spreadsheet become one. And the one thing you've never had —
 true margin per job, per tech, per branch — is on the first screen you see every morning."
+
+---
+
+## The seeded company
+
+`npm run db:seed` builds Apex Handyman Services from scratch, every figure produced by the
+same posting engine the product uses. Nothing on any screen is a fixture.
+
+**Three branches** — Phoenix (the original), Mesa, Scottsdale — with their own service
+areas, sales tax rates, warehouses and P&L.
+
+**Fourteen technicians**, each with a van that is a real stock location, a wage, a burden
+multiplier, and a callback rate that differs between them. Teddy Brasch's rework rate is
+several times Marcus Deleon's, which is what makes the scorecard worth showing.
+
+**Twelve months of trading**, seasonal the way Phoenix actually is: plumbing peaks through
+the summer, the last two weeks of December are dead.
+
+### What is deliberately imperfect
+
+A demo where everything is tidy proves nothing. The seeded company has problems, because
+the product's value is that it surfaces them:
+
+- **Scottsdale's drywall work runs at a fraction of the margin of every other service
+  line.** The flat-rate price was set in 2023 and never revisited while board and compound
+  costs climbed. It is invisible in revenue and obvious in margin-by-service-type — this is
+  the anomaly to drill into in Act 4.
+- **Some jobs are still in flight**, so the dispatch board has work on it rather than being
+  a graveyard of completed calls.
+- **Some quotes are still open**, so the pipeline report has a pipeline.
+- **Some invoices are unpaid and ageing**, so the AR aging report has buckets.
+- **Warranty callbacks exist**, costed but never billed, sitting against the technician who
+  caused them.
+- **Van stock has drifted** on some trucks and dropped below reorder point on others.
+- **Older periods are closed.** Try to post into one and the system refuses, which is the
+  point of Act 3 step 6.
+
+### Reproducibility
+
+The same seed number produces the same company every time, so a demo script can name
+figures and they will still be true after a reset. `DEMO_SEED=42` produces a different but
+equally reproducible one.
+
+Reset is safe by construction: it refuses on any organization whose `dataMode` is not
+`DEMO`. A salesperson resetting between meetings cannot reach a customer's live books.

@@ -270,6 +270,88 @@ export async function addJobLine(
   });
 }
 
+/**
+ * Add several lines at once.
+ *
+ * The field app submits a whole line set when a technician finishes building a job, so
+ * resolving each price in its own transaction is both slower and less correct: the lines
+ * should all price against the same moment, or a price change mid-entry splits the job
+ * across two price books.
+ */
+export async function addJobLines(
+  db: PrismaClient,
+  ctx: AuthContext,
+  jobId: string,
+  inputs: AddJobLineInput[],
+) {
+  requirePermission(ctx, PERMISSIONS.JOB_WRITE);
+  if (inputs.length === 0) return [];
+
+  const job = await scopedDb(db, ctx).job.findFirst({
+    where: { id: jobId },
+    select: {
+      id: true,
+      locationId: true,
+      status: true,
+      jobNo: true,
+      customer: { select: { priceTier: true } },
+    },
+  });
+  if (!job) throw new NotFoundError('Job', jobId);
+  requireLocation(ctx, job.locationId);
+  if (job.status === 'CLOSED' || job.status === 'CANCELLED') {
+    throw new ValidationError(`Job ${job.jobNo} is ${job.status} and cannot take new lines`);
+  }
+
+  const itemIds = [...new Set(inputs.map((i) => i.priceBookItemId).filter((id): id is string => !!id))];
+  const priced = new Map(
+    await Promise.all(
+      itemIds.map(async (id) =>
+        [
+          id,
+          await resolvePrice(db, ctx.organizationId, id, {
+            locationId: job.locationId,
+            priceTier: job.customer.priceTier,
+          }),
+        ] as const,
+      ),
+    ),
+  );
+
+  const existing = await db.jobLine.count({ where: { jobId } });
+
+  const rows = inputs.map((input, index) => {
+    const price = input.priceBookItemId ? priced.get(input.priceBookItemId) : undefined;
+    const description = input.description ?? price?.name;
+    const unitPriceCents = input.unitPriceCents ?? price?.priceCents;
+
+    if (!description) throw new ValidationError('A job line needs a description');
+    if (unitPriceCents === undefined) throw new ValidationError('A job line needs a unit price');
+
+    const quantity = input.quantity.toString();
+    const extended = (BigInt(Math.round(Number(quantity) * 1000)) * unitPriceCents) / 1000n;
+    const discount = input.discountCents ?? 0n;
+
+    return {
+      jobId,
+      changeOrderId: input.changeOrderId ?? null,
+      priceBookItemId: input.priceBookItemId ?? null,
+      sortOrder: existing + index,
+      category: input.category ?? price?.category ?? ('MATERIAL' as const),
+      description,
+      quantity,
+      unitPriceCents,
+      unitCostCents: input.unitCostCents ?? price?.costCents ?? 0n,
+      discountCents: discount,
+      isTaxable: true,
+      totalCents: extended - discount,
+    };
+  });
+
+  await db.jobLine.createMany({ data: rows });
+  return rows;
+}
+
 /** Unbilled lines, in the order they were added — the basis for the next invoice. */
 export async function unbilledJobLines(db: PrismaClient, ctx: AuthContext, jobId: string): Promise<DraftLine[]> {
   const lines = await db.jobLine.findMany({
