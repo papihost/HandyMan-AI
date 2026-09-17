@@ -239,3 +239,20 @@ export async function setPropertyJurisdiction(
 ): Promise<void> {
   await db.property.update({ where: { id: propertyId }, data: { taxJurisdictionId } });
 }
+
+export async function createStockLocation(
+  organizationId: string,
+  opts: { kind: 'WAREHOUSE' | 'VAN'; code?: string; locationId?: string; technicianId?: string },
+): Promise<string> {
+  const stock = await db.stockLocation.create({
+    data: {
+      organizationId,
+      kind: opts.kind,
+      code: opts.code ?? `${opts.kind}-${randomUUID().slice(0, 6).toUpperCase()}`,
+      name: opts.code ?? `${opts.kind} stock`,
+      locationId: opts.locationId ?? null,
+      technicianId: opts.technicianId ?? null,
+    },
+  });
+  return stock.id;
+}

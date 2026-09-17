@@ -50,7 +50,7 @@ npm run db:seed               # seeds the Apex Handyman demo company
 ## Testing
 
 ```bash
-npm test          # 119 tests: unit + integration against Postgres
+npm test          # 146 tests: unit + integration against Postgres
 npm run typecheck
 ```
 
@@ -77,13 +77,17 @@ and row locks on the document-number sequence. A mock would prove nothing about 
 - Invoicing that posts itself to the ledger, deposits held as a liability until earned,
   payments, and AR aging.
 - Job costing read from the general ledger rather than from a summary table.
+- Inventory across warehouses and per-technician vans: moving-average costing under row
+  locks, transfers, consumption to COGS on a job, cycle counts with shrinkage, reorder
+  suggestions, and a valuation that is asserted equal to the inventory accounts in the
+  general ledger.
 
 The full path is covered end to end by `tests/workflow.test.ts`: a quote approved in the
 field becomes a job, the job becomes an invoice, the invoice posts to the general ledger,
 and the margin on that job is read back off the same journal lines the P&L is built from.
 
-**Next:** inventory with van stock, the offline field PWA, the import wizard, and the demo
-seed. See the build order in the blueprint.
+**Next:** the offline field PWA, the import wizard, and the demo seed. See the build order
+in the blueprint.
 
 ## Architecture notes
 

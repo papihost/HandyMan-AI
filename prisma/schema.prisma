@@ -1148,7 +1148,14 @@ model StockLevel {
   stockLocationId String
   priceBookItemId String
   quantity        Decimal @db.Decimal(14, 3) @default(0)
-  // Moving average cost, maintained per stock location on every receipt/transfer.
+  /**
+   * Total value on hand, maintained alongside quantity. Valuation reads this rather than
+   * quantity x average, because repeatedly rounding an average to the cent drifts away
+   * from the money actually spent. The average below is derived from it for display and
+   * for costing a partial consumption.
+   */
+  valueCents      BigInt  @default(0)
+  // Moving average cost, recomputed from value / quantity on every receipt and transfer.
   avgCostCents    BigInt  @default(0)
   reorderPoint    Decimal? @db.Decimal(12, 3)
   reorderQty      Decimal? @db.Decimal(12, 3)

@@ -255,3 +255,41 @@ taxable lines by weight, with any remainder pushed onto the first of them.
 **Margin never includes tax.** Sales tax is collected on behalf of the state; it is a
 liability from the moment it is charged and it is not revenue. Job costing reports net
 revenue for the same reason.
+
+## 10. Inventory costing
+
+**Every van is a stock location.** Parts do not sit in a warehouse; they sit in twenty
+trucks. Warehouse stock posts to 1300 and van stock to 1310, so the balance sheet shows
+how much of the inventory asset is actually driving around.
+
+**Moving average, captured at the movement.** A receipt adds value and quantity; the
+average is derived from the two. A later receipt at a higher price changes what the *next*
+job costs and never restates a job that closed last March.
+
+**Value is stored, not recomputed.** `StockLevel` carries `valueCents` alongside
+`quantity`. Valuing inventory as quantity × average re-rounds a rounded number on every
+report and the drift compounds with each receipt; holding the value keeps the subledger
+equal to the money actually spent. A consumption that empties a bin relieves exactly what
+is left rather than a rounded approximation of it — `tests/inventory.test.ts` asserts this
+on three units bought at $3.33 each.
+
+**Read-modify-write is locked.** A moving average is read, modified and written back, so
+`SELECT … FOR UPDATE` holds the stock level row for the rest of the transaction. Without
+it, two concurrent receipts each read the old average and the second silently discards the
+first — the inventory asset stops matching what was paid for it, quietly, with no error
+anywhere. Transfers lock the two sides in a stable order so opposite-direction transfers
+between the same pair of locations cannot deadlock.
+
+**Stock is allowed to go negative.** A technician uses a part nobody recorded as received.
+Refusing the entry would only mean the job never gets costed at all, and the technician
+stops using the app. The consumption is priced at the item's standard cost so the job
+still carries a defensible figure, and the negative appears on its own report — every
+negative line is a receipt somebody did not enter.
+
+**Counts re-read under lock.** A cycle count's expected quantity is read at post time, not
+at open time, so a job that consumed parts while the technician was counting does not turn
+into a phantom variance. Shortages debit 5090 Inventory Shrinkage; overages credit it.
+
+The subledger and the general ledger are asserted equal: `inventoryValuation()` and the
+1300 + 1310 balances on the trial balance must agree to the penny. If they ever disagree,
+one of them is wrong and nobody can tell which.
