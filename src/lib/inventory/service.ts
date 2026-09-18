@@ -1,5 +1,11 @@
 import type { PrismaClient, StockLocationKind } from '@prisma/client';
-import { requireLocation, requirePermission, systemContext, type AuthContext } from '../auth/context';
+import {
+  postingContextFor,
+  requireLocation,
+  requirePermission,
+  systemContext,
+  type AuthContext,
+} from '../auth/context';
 import { PERMISSIONS } from '../auth/permissions';
 import { NotFoundError, ValidationError } from '../errors';
 import { sum, ZERO, type Cents } from '../money';
@@ -190,7 +196,7 @@ export async function receiveStock(db: PrismaClient, ctx: AuthContext, input: Re
 
     const entry = await postJournalEntry(
       db,
-      ctx,
+      postingContextFor(ctx),
       {
         entryDate: occurredAt,
         source: 'INVENTORY',
@@ -305,7 +311,7 @@ export async function transferStock(db: PrismaClient, ctx: AuthContext, input: T
 
     const entry = await postJournalEntry(
       db,
-      ctx,
+      postingContextFor(ctx),
       {
         entryDate: occurredAt,
         source: 'INVENTORY',
@@ -411,7 +417,7 @@ export async function consumePartsForJob(
 
     const entry = await postJournalEntry(
       db,
-      ctx,
+      postingContextFor(ctx),
       {
         entryDate: occurredAt,
         source: 'INVENTORY',

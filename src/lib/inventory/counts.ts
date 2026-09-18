@@ -1,5 +1,5 @@
 import type { PrismaClient } from '@prisma/client';
-import { requirePermission, type AuthContext } from '../auth/context';
+import { postingContextFor, requirePermission, type AuthContext } from '../auth/context';
 import { PERMISSIONS } from '../auth/permissions';
 import { NotFoundError, ValidationError } from '../errors';
 import { ZERO, type Cents } from '../money';
@@ -164,7 +164,7 @@ export async function postCycleCount(
     if (totalVariance !== ZERO) {
       const entry = await postJournalEntry(
         db,
-        ctx,
+        postingContextFor(ctx),
         {
           entryDate: occurredAt,
           source: 'INVENTORY',

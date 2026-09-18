@@ -97,6 +97,23 @@ export function requireLocation(ctx: AuthContext, locationId: string): void {
 }
 
 /**
+ * Authority to post, arising from a business operation the caller was already permitted
+ * to perform.
+ *
+ * `gl:post` guards *discretionary* journal entries — someone deciding to move money
+ * between accounts by hand. It is not what guards an invoice being issued or parts coming
+ * off a van: those postings are consequences of the posting rules, not choices, and the
+ * permission that matters was already checked on the operation itself.
+ *
+ * A technician must never hold `gl:post`, and must still be able to close a job. This is
+ * how both are true. The original actor is carried through, so the journal entry records
+ * who caused it rather than attributing it to nobody.
+ */
+export function postingContextFor(ctx: AuthContext): AuthContext {
+  return { ...systemContext(ctx.organizationId, ctx.userId), sessionId: ctx.sessionId };
+}
+
+/**
  * A system context for seeds, migrations, scheduled jobs, and posting rules invoked by
  * the engine itself. It is deliberately explicit: nothing acquires full authority by
  * accident, it has to be asked for by name.

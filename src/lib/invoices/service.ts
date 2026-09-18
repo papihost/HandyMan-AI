@@ -1,5 +1,11 @@
 import type { PaymentMethod, PrismaClient } from '@prisma/client';
-import { systemContext, requireLocation, requirePermission, type AuthContext } from '../auth/context';
+import {
+  postingContextFor,
+  requireLocation,
+  requirePermission,
+  systemContext,
+  type AuthContext,
+} from '../auth/context';
 import { PERMISSIONS } from '../auth/permissions';
 import { scopedDb } from '../auth/scoped-db';
 import { NotFoundError, ValidationError } from '../errors';
@@ -217,7 +223,7 @@ export async function issueInvoice(
 
     const entry = await postJournalEntry(
       db,
-      ctx,
+      postingContextFor(ctx),
       {
         entryDate: invoice.issueDate,
         source: 'INVOICE',
@@ -356,7 +362,7 @@ export async function recordPayment(
 
     const entry = await postJournalEntry(
       db,
-      ctx,
+      postingContextFor(ctx),
       {
         entryDate: receivedAt,
         source: 'PAYMENT',

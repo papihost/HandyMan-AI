@@ -19,6 +19,7 @@ accounting system built in**. No QuickBooks sync, no external ledger — the boo
 | [`docs/01-accounting-design.md`](docs/01-accounting-design.md) | Chart of accounts, the posting-rule table for every business event, job costing and labor burden, sales tax, and the ledger safeguards |
 | [`docs/02-data-migration.md`](docs/02-data-migration.md) | The import wizard: order of operations, opening balances, dry run, reconciliation proof, rollback, and demo-vs-live isolation |
 | [`docs/03-demo-script.md`](docs/03-demo-script.md) | A 25-minute customer demo, in four acts |
+| [`docs/04-field-sync.md`](docs/04-field-sync.md) | How the tablet works offline: intent-based sync, idempotent replay, conflict outcomes, and ledger authority |
 
 ## Data model
 
@@ -86,7 +87,7 @@ Resetting is safe by construction: it refuses on any organization whose `dataMod
 ## Testing
 
 ```bash
-npm test          # 235 tests: unit + integration against Postgres
+npm test          # 256 tests: unit + integration against Postgres
 npm run typecheck
 ```
 
@@ -127,6 +128,10 @@ and row locks on the document-number sequence. A mock would prove nothing about 
   reason, validation, a dry run that really executes and is rolled back, opening balances
   through Opening Balance Equity, a reconciliation that proves the totals, and batch
   rollback.
+- The field sync engine: a cost-free working set for a technician's device, and an outbox
+  that replays intent rather than state — idempotent under retry, ordered by the device's
+  own sequence, and settling each operation independently so one conflict does not strand a
+  technician's day.
 
 The full path is covered end to end by `tests/workflow.test.ts`: a quote approved in the
 field becomes a job, the job becomes an invoice, the invoice posts to the general ledger,

@@ -1,5 +1,11 @@
 import type { PrismaClient } from '@prisma/client';
-import { requireLocation, requirePermission, systemContext, type AuthContext } from '../auth/context';
+import {
+  postingContextFor,
+  requireLocation,
+  requirePermission,
+  systemContext,
+  type AuthContext,
+} from '../auth/context';
 import { PERMISSIONS } from '../auth/permissions';
 import { NotFoundError, ValidationError } from '../errors';
 import { ZERO, type Cents } from '../money';
@@ -103,7 +109,7 @@ export async function recordJobPurchase(
 
     const entry = await postJournalEntry(
       db,
-      ctx,
+      postingContextFor(ctx),
       {
         entryDate: billDate,
         source: 'VENDOR_BILL',
@@ -167,7 +173,7 @@ export async function payOpenBills(
   return db.$transaction(async (tx) => {
     const entry = await postJournalEntry(
       db,
-      ctx,
+      postingContextFor(ctx),
       {
         entryDate: options.throughDate,
         source: 'BILL_PAYMENT',
