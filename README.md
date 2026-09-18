@@ -86,7 +86,7 @@ Resetting is safe by construction: it refuses on any organization whose `dataMod
 ## Testing
 
 ```bash
-npm test          # 169 tests: unit + integration against Postgres
+npm test          # 235 tests: unit + integration against Postgres
 npm run typecheck
 ```
 
@@ -122,6 +122,11 @@ and row locks on the document-number sequence. A mock would prove nothing about 
   runs.
 - The Apex Handyman demo company: three branches, fourteen technicians, ~4,500 jobs across
   twelve months, ~18,000 journal entries — all produced by the posting engine above.
+- The import wizard: delimiter and header detection, per-column date-order and
+  decimal-separator detection, automatic column mapping with a stated confidence and
+  reason, validation, a dry run that really executes and is rolled back, opening balances
+  through Opening Balance Equity, a reconciliation that proves the totals, and batch
+  rollback.
 
 The full path is covered end to end by `tests/workflow.test.ts`: a quote approved in the
 field becomes a job, the job becomes an invoice, the invoice posts to the general ledger,

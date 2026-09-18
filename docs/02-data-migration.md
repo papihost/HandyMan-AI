@@ -85,3 +85,80 @@ The demo company and the customer's real data never touch:
   books.
 - A `LIVE` organization can be seeded with *reference* data only (default COA, standard price
   book templates) without any transactional demo noise.
+
+---
+
+## 6. Implementation notes
+
+The engine is `src/lib/import/`. Parsing, coercion and row building are pure functions, so
+the awkward cases can be tested against a table of inputs rather than a database.
+
+### Parsing
+
+A delimited-text parser rather than a dependency, because the interesting cases here are
+the ones a general-purpose parser treats as edge cases and a customer's export treats as
+Tuesday: a quoted field containing the delimiter, a newline inside an address, doubled
+quotes, a UTF-8 BOM from Excel, mixed line endings, and rows with the wrong column count.
+
+- **Delimiter detection** counts candidates *outside* quotes and prefers consistency over
+  volume. A file of quoted addresses is full of commas and is still tab-delimited.
+- **Header detection** skips the title block accounting packages print on top. The header
+  is the first row whose cells are mostly populated, distinct, and not numbers.
+- **Ragged rows are padded, not shifted.** One malformed line must not move every
+  subsequent column by one, which is the failure that produces a plausible-looking import
+  where every phone number is a postal code.
+- **Line numbers are absolute**, counted past the title block, so "fix line 11" points at
+  line 11 of the file the office manager opens.
+
+### Coercion
+
+Where migrations actually go wrong. Each of these is a silent, plausible-looking error:
+
+| Input | Trap |
+|---|---|
+| `03/04/2025` | March or April depending on the country |
+| `(45.00)` | Negative, not a footnote |
+| `1.234,56` | A European thousand separator — reading it as a decimal point is off by 1000× |
+| `01/15/24` | A two-digit year |
+| `02/31/2025` | Not a real date; must not roll into March |
+
+The date order and decimal separator are **detected per column** from a sample, not
+assumed. When every date in a column is ambiguous the wizard says so and asks, because a
+wrong guess misdates a year of history by up to eleven months.
+
+### Dry run
+
+The entire import executes inside a transaction that is then deliberately rolled back. The
+counts, the errors and the ledger impact shown are therefore the real ones rather than a
+prediction — the same code path that will commit, run for real and then unwound. The batch
+record itself is written outside that transaction, so there is an audit trail of having
+tested first.
+
+### Opening balances
+
+Subledger imports post against **3900 Opening Balance Equity**, and the trial balance
+clears it:
+
+```
+Open invoices     Dr 1200 Accounts Receivable   Cr 3900 Opening Balance Equity
+Trial balance     Dr/Cr every remaining account, balanced by 3900 → nets to zero
+```
+
+**A trial balance line is skipped only when that subledger actually loaded.** Assuming it
+did is a real bug and was found by a test: receivables came over as invoices, so the trial
+balance's AR line is correctly skipped — but payables had no subledger import, so skipping
+theirs would have buried $14,880 of AP in opening equity and left a balance sheet that
+balanced while being wrong. The rule is to look at the account's current balance, not to
+assume.
+
+If 3900 does not net to zero after the trial balance is loaded, the migration is out of
+balance and the reconciliation says so loudly rather than leaving a broken ledger to be
+discovered at the first month end.
+
+### Rollback
+
+Every imported record carries its `importBatchId`. Rolling back reverses the journal
+entries — a posted entry is never deleted, even one that should not have been made — and
+removes the records, **except** anything that has since been used: a customer with a job,
+an item that has been quoted, an account with postings. Those have stopped being the
+import's to remove.
