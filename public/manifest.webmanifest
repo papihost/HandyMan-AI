@@ -1,0 +1,14 @@
+{
+  "name": "Apex Field",
+  "short_name": "Apex",
+  "description": "Field service app for handyman technicians",
+  "start_url": "/field",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f8fafc",
+  "theme_color": "#2563eb",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

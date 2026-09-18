@@ -1,0 +1,93 @@
+@import 'tailwindcss';
+
+/*
+ * Built for a 10-inch tablet held in one hand, in a garage, in daylight, sometimes with a
+ * glove on. That means large type, high contrast, and targets no smaller than 48px — a
+ * technician should never have to aim.
+ */
+@theme {
+  --color-ink: oklch(0.21 0.02 250);
+  --color-ink-soft: oklch(0.45 0.02 250);
+  --color-surface: oklch(0.99 0.003 250);
+  --color-card: oklch(1 0 0);
+  --color-line: oklch(0.9 0.008 250);
+  --color-brand: oklch(0.52 0.16 250);
+  --color-brand-soft: oklch(0.95 0.03 250);
+  --color-go: oklch(0.55 0.15 150);
+  --color-warn: oklch(0.72 0.16 75);
+  --color-stop: oklch(0.58 0.2 25);
+}
+
+:root {
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --color-ink: oklch(0.96 0.005 250);
+    --color-ink-soft: oklch(0.72 0.02 250);
+    --color-surface: oklch(0.18 0.015 250);
+    --color-card: oklch(0.23 0.018 250);
+    --color-line: oklch(0.32 0.02 250);
+    --color-brand-soft: oklch(0.3 0.05 250);
+  }
+}
+
+html,
+body {
+  background: var(--color-surface);
+  color: var(--color-ink);
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  /* A field app is not a document: rubber-band scrolling over a signature pad is a bug. */
+  overscroll-behavior-y: none;
+}
+
+/*
+ * A custom utility rather than a component class, so it can be composed with @apply the
+ * way a built-in utility can.
+ */
+@utility tap {
+  min-height: 3rem;
+  min-width: 3rem;
+  touch-action: manipulation;
+  user-select: none;
+}
+
+@layer components {
+  .card {
+    background: var(--color-card);
+    border: 1px solid var(--color-line);
+    border-radius: 1rem;
+  }
+
+  .btn {
+    @apply tap inline-flex items-center justify-center gap-2 rounded-xl px-5 text-base font-semibold transition active:scale-[0.98];
+  }
+
+  .btn-primary {
+    background: var(--color-brand);
+    color: white;
+  }
+
+  .btn-go {
+    background: var(--color-go);
+    color: white;
+  }
+
+  .btn-quiet {
+    background: var(--color-card);
+    color: var(--color-ink);
+    border: 1px solid var(--color-line);
+  }
+
+  .field-input {
+    @apply tap w-full rounded-xl px-4 text-base;
+    background: var(--color-card);
+    border: 1px solid var(--color-line);
+    color: var(--color-ink);
+  }
+}

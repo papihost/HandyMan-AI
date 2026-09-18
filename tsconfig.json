@@ -1,10 +1,16 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022"],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "types": ["node"],
+    "types": [
+      "node"
+    ],
     "strict": true,
     "noUncheckedIndexedAccess": false,
     "esModuleInterop": true,
@@ -14,8 +20,30 @@
     "isolatedModules": true,
     "noEmit": true,
     "baseUrl": ".",
-    "paths": { "@/*": ["./src/*"] }
+    "paths": {
+      "@/*": [
+        "./src/*"
+      ]
+    },
+    "jsx": "preserve",
+    "allowJs": true,
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ]
   },
-  "include": ["src/**/*.ts", "prisma/**/*.ts", "vitest.config.mts"],
-  "exclude": ["node_modules"]
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "prisma/**/*.ts",
+    "tests/**/*.ts",
+    "vitest.config.mts",
+    "next-env.d.ts",
+    ".next/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
 }

@@ -149,3 +149,53 @@ order and two signatures; the van is two wax rings lighter; labour is costed at 
 loaded rate; the trial balance balances; and job margin is readable from the ledger.
 
 Then it sends the whole queue a second time and asserts the books do not move.
+
+---
+
+## 7. The device half
+
+`src/client/` and `src/app/field/`. Three decisions shape it.
+
+**Everything is queued, including when there is signal.** An action writes to the outbox and
+updates the local copy; sending happens separately. One code path means the offline case is
+the case that runs all day, rather than a rarely-taken branch that breaks quietly in a
+basement.
+
+**Push before pull, always.** The device's own work is the newest truth about a job it has
+been working. Pulling first would overwrite an unsent change with the server's older copy,
+and a technician would watch their last hour disappear.
+
+**The local copy is a cache, not a second source of truth.** Actions apply locally at once
+so the screen responds immediately — a tablet that waited for a round trip before showing a
+status change feels broken, and a technician who thinks the app is broken stops using it.
+The next pull overwrites that copy with whatever the server says, which is how a conflict
+resolves itself visibly instead of leaving the device quietly wrong.
+
+### Details that matter in a van
+
+- **Sequence numbers are persisted**, never derived from the queue's length. Acknowledged
+  work leaves the queue, so counting it would reuse a number and the server would apply a
+  morning in the wrong order.
+- **Photos upload before the operation that references them.** A record never points at a
+  file the server does not have; the evidence and the record travel together.
+- **A failed send requeues rather than discards.** The queue is the record; the network is
+  not.
+- **Van stock decrements locally** when parts are booked out, so a technician cannot record
+  using stock they no longer have and discover it at the depot.
+- **Unsent lines are labelled "not sent"** rather than shown as if they were saved.
+- **Backoff, not hammering.** Retrying every second in a dead zone flattens the battery by
+  lunchtime, so the interval doubles to five minutes — but reconnecting fires immediately,
+  because driving out of a basement is exactly when a morning should go up.
+- **The service worker caches the shell and never the API.** Job data belongs to the sync
+  engine, which knows about cursors, conflicts and the outbox; a worker replaying a stale
+  API response would hand the app data the sync engine never agreed to.
+- **The sync badge is always visible.** "3 waiting" is reassuring. A silent app that might
+  or might not have saved the morning is what makes people photograph their own screen as a
+  backup.
+
+### Verified in a browser
+
+Driven with Playwright at iPad size against the seeded company: sign in, pull the week,
+open a job, **go offline**, mark en route, search the price book, add work — the badge
+reads `Offline · 2 waiting` and the job total updates on screen — then reconnect and watch
+it settle to `All saved`, with the lines and the status change confirmed in the database.

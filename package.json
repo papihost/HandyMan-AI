@@ -13,19 +13,33 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "db:deploy": "prisma migrate deploy"
+    "db:deploy": "prisma migrate deploy",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^22.20.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "fake-indexeddb": "^6.2.5",
+    "jsdom": "^30.1.0",
+    "postcss": "^8.5.28",
     "prisma": "^6.1.0",
+    "tailwindcss": "^4.3.3",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^5.0.1"
   },
   "dependencies": {
-    "@prisma/client": "^6.1.0"
+    "@prisma/client": "^6.1.0",
+    "next": "^15.5.25",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
   }
 }

@@ -39,6 +39,17 @@ Two rules run through all of it:
 Next.js (App Router) · PostgreSQL + Prisma · PWA with a service worker and IndexedDB outbox
 for offline field work · object storage for job photos.
 
+## Running it
+
+```bash
+npm run build && npm start     # or: npm run dev
+```
+
+Open <http://localhost:3000>. Sign in as a technician from the seeded company —
+`marcus.deleon@apexhandyman.test` with the password the seed prints — and the device pulls
+that technician's week down. Turn the network off and keep working: the app is built for a
+crawl space, not a coffee shop.
+
 ## Getting started
 
 ```bash
@@ -87,7 +98,7 @@ Resetting is safe by construction: it refuses on any organization whose `dataMod
 ## Testing
 
 ```bash
-npm test          # 256 tests: unit + integration against Postgres
+npm test          # 274 tests: unit + integration against Postgres
 npm run typecheck
 ```
 
@@ -132,6 +143,10 @@ and row locks on the document-number sequence. A mock would prove nothing about 
   that replays intent rather than state — idempotent under retry, ordered by the device's
   own sequence, and settling each operation independently so one conflict does not strand a
   technician's day.
+- The tablet app itself: an installable PWA with a service worker for the offline shell,
+  IndexedDB for the day's work and queued photos, and screens for the whole visit — my day,
+  the job with access notes and prior visits, on-site quoting from the price book, parts off
+  the van, before/after photos, a change order signed on the glass, and completion.
 
 The full path is covered end to end by `tests/workflow.test.ts`: a quote approved in the
 field becomes a job, the job becomes an invoice, the invoice posts to the general ledger,
