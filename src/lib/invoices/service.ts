@@ -185,7 +185,15 @@ export async function issueInvoice(
   const result = await db.$transaction(async (tx) => {
     const invoice = await tx.invoice.findFirst({
       where: { id: invoiceId, organizationId: ctx.organizationId },
-      include: { lines: { orderBy: { sortOrder: 'asc' } }, taxLines: true },
+      include: {
+        lines: { orderBy: { sortOrder: 'asc' } },
+        taxLines: true,
+        // The trade this work belongs to, so revenue lands against the same service line
+        // its costs do. Without it, margin by trade has costs on one side and nothing on
+        // the other, and the report is worse than useless — it is wrong in a believable
+        // direction.
+        job: { select: { serviceTypeId: true } },
+      },
     });
     if (!invoice) throw new NotFoundError('Invoice', invoiceId);
     requireLocation(ctx, invoice.locationId);
@@ -207,12 +215,15 @@ export async function issueInvoice(
       }
     }
 
+    const serviceTypeId = invoice.job?.serviceTypeId ?? null;
+
     const revenue = revenueByCategory(
       invoice.lines.map((l) => ({
         category: l.category,
         description: l.description,
         quantity: l.quantity.toString(),
         unitPriceCents: l.unitPriceCents,
+        serviceTypeId,
         extendedCents: l.unitPriceCents,
         netCents: l.totalCents - l.taxCents,
         taxCents: l.taxCents,

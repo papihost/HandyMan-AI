@@ -46,6 +46,40 @@ export interface SignInResult {
   context: AuthContext;
 }
 
+/**
+ * Which organization an address belongs to, for a deployment that does not put the tenant
+ * in the host name — a demo laptop, a single-company install.
+ *
+ * Resolved from the address rather than from "the first organization on the box", because
+ * a machine that has run the seed more than once, or run the test suite, holds several.
+ * Picking the oldest signs a presenter into an empty company using their own email and
+ * their own password, which is indistinguishable from a broken product. The newest match
+ * wins: that is the company someone most recently built.
+ *
+ * An address nobody holds falls back to an arbitrary organization rather than failing
+ * differently, so the caller's failure stays the one generic message an unknown password
+ * already produces.
+ */
+export async function resolveOrganizationForSignIn(
+  db: PrismaClient,
+  rawEmail: string,
+): Promise<string> {
+  const email = rawEmail.trim().toLowerCase();
+
+  const match = await db.user.findFirst({
+    where: { email, isActive: true },
+    orderBy: { organization: { createdAt: 'desc' } },
+    select: { organizationId: true },
+  });
+  if (match) return match.organizationId;
+
+  const fallback = await db.organization.findFirstOrThrow({
+    orderBy: { createdAt: 'asc' },
+    select: { id: true },
+  });
+  return fallback.id;
+}
+
 export async function signIn(db: PrismaClient, params: SignInParams): Promise<SignInResult> {
   const email = params.email.trim().toLowerCase();
 

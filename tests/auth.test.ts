@@ -6,7 +6,13 @@ import { hashPassword, needsRehash, verifyPassword, WeakPasswordError } from '..
 import { redactRecord, redactedFieldsFor } from '../src/lib/auth/redaction';
 import { scopedDb } from '../src/lib/auth/scoped-db';
 import { resolveSession, revokeSession } from '../src/lib/auth/session';
-import { changePassword, deactivateUser, signIn, signOut } from '../src/lib/auth/service';
+import {
+  changePassword,
+  deactivateUser,
+  resolveOrganizationForSignIn,
+  signIn,
+  signOut,
+} from '../src/lib/auth/service';
 import { createTestJob, createTestOrg, createTestUser, type TestOrg } from './factory';
 
 let org: TestOrg;
@@ -391,5 +397,33 @@ describe('tenant isolation', () => {
 
     const stillThere = await db.job.findUniqueOrThrow({ where: { id: otherJob.jobId } });
     expect(stillThere.title).toBe('Repair drywall');
+  });
+});
+
+describe('resolving an organization from an address', () => {
+  it('picks the newest company holding the address, not the oldest on the box', async () => {
+    // The same person, the same address, in two companies — which is what a laptop looks
+    // like after the demo has been reseeded, or after the test suite has run.
+    const older = await createTestOrg('Stale');
+    const newer = await createTestOrg('Fresh');
+    const email = `same.person.${Date.now()}@example.test`;
+
+    await createTestUser(older.organizationId, { roleKey: 'DISPATCHER', email });
+    await createTestUser(newer.organizationId, { roleKey: 'DISPATCHER', email });
+
+    expect(await resolveOrganizationForSignIn(db, email)).toBe(newer.organizationId);
+    // Case and surrounding space are the user's, not the database's.
+    expect(await resolveOrganizationForSignIn(db, `  ${email.toUpperCase()} `)).toBe(
+      newer.organizationId,
+    );
+  });
+
+  it('falls back rather than failing differently for an address nobody holds', async () => {
+    const resolved = await resolveOrganizationForSignIn(db, 'nobody@nowhere.test');
+
+    // Some organization, so the caller's failure is the same generic one a wrong password
+    // gets. An error here would say "this address does not exist" out loud.
+    expect(typeof resolved).toBe('string');
+    expect(resolved.length).toBeGreaterThan(0);
   });
 });

@@ -108,6 +108,12 @@ export async function transitionJob(
   ctx: AuthContext,
   jobId: string,
   to: JobStatus,
+  /**
+   * When the transition actually happened. Defaults to now, which is right for a
+   * technician tapping the button; an import or a backdated correction knows better,
+   * and a stamped-at-write-time timestamp would quietly put the work in the wrong week.
+   */
+  options: { occurredAt?: Date } = {},
 ) {
   requirePermission(ctx, PERMISSIONS.JOB_WRITE);
 
@@ -125,7 +131,7 @@ export async function transitionJob(
     );
   }
 
-  const now = new Date();
+  const now = options.occurredAt ?? new Date();
   return db.job.update({
     where: { id: jobId },
     data: {

@@ -91,3 +91,108 @@ body {
     color: var(--color-ink);
   }
 }
+
+/*
+ * Office chrome and chart ink.
+ *
+ * These are the validated data-visualisation palette's values, kept as tokens so a chart
+ * and the table beside it agree, and so dark mode is a chosen set of steps rather than an
+ * automatic flip of the light ones.
+ */
+.office {
+  color-scheme: light;
+  --surface: #fcfcfb;
+  --plane: #f9f9f7;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --ink-muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --hairline: rgba(11, 11, 11, 0.1);
+
+  /* Sequential blue: magnitude, more is darker. */
+  --seq: #2a78d6;
+  --seq-soft: #cde2fb;
+
+  /* Ordinal ramp for ordered buckets. Validated light→dark with visible step gaps. */
+  --ord-1: #86b6ef;
+  --ord-2: #5598e7;
+  --ord-3: #2a78d6;
+  --ord-4: #1c5cab;
+  --ord-5: #0d366b;
+
+  /* Status is reserved: never a series colour, always with an icon and a label. */
+  --good: #0ca30c;
+  --good-ink: #006300;
+  --warning: #fab219;
+  --serious: #ec835a;
+  --critical: #d03b3b;
+
+  background: var(--plane);
+  color: var(--ink);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .office {
+    color-scheme: dark;
+    --surface: #1a1a19;
+    --plane: #0d0d0d;
+    --ink: #ffffff;
+    --ink-2: #c3c2b7;
+    --ink-muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --hairline: rgba(255, 255, 255, 0.1);
+
+    --seq: #3987e5;
+    --seq-soft: #184f95;
+
+    --ord-1: #cde2fb;
+    --ord-2: #9ec5f4;
+    --ord-3: #6da7ec;
+    --ord-4: #3987e5;
+    --ord-5: #184f95;
+
+    --good-ink: #0ca30c;
+  }
+}
+
+@layer components {
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-radius: 0.875rem;
+  }
+
+  .office table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  .office th {
+    text-align: left;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--grid);
+  }
+
+  .office td {
+    padding: 0.625rem 0.75rem;
+    border-bottom: 1px solid var(--grid);
+    font-size: 0.9375rem;
+  }
+
+  .office tbody tr:last-child td {
+    border-bottom: 0;
+  }
+
+  /* Columns of figures must align; a standalone hero number should not. */
+  .num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+}

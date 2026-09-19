@@ -37,6 +37,11 @@ export default function FieldLayout({ children }: { children: React.ReactNode })
           router.replace('/sign-in');
           return;
         }
+        if (!signedIn.technicianId) {
+          // An office user has no day to show. Send them where their work is.
+          router.replace('/office');
+          return;
+        }
         setUser(signedIn);
         setChecked(true);
       })

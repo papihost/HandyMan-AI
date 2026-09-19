@@ -34,6 +34,10 @@ beforeAll(async () => {
 }, 300_000);
 
 afterAll(async () => {
+  // The suite leaves nothing behind. A demo organization that outlives its test is not
+  // inert: the sign-in route has to resolve an organization from an email address, and a
+  // stale company holding the same demo users is a very confusing thing to land in.
+  await deleteDemoOrganization(db, organizationId);
   await db.$disconnect();
 });
 

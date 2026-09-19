@@ -1,6 +1,6 @@
 import { cookies } from 'next/headers';
 import { db } from '../../../../lib/db';
-import { signIn } from '../../../../lib/auth/service';
+import { resolveOrganizationForSignIn, signIn } from '../../../../lib/auth/service';
 import { sessionCookieOptions, SESSION_COOKIE } from '../../../../lib/auth/session';
 import { errorResponse, jsonResponse } from '../../../../server/json';
 import { requestMeta } from '../../../../server/session';
@@ -22,10 +22,14 @@ export async function POST(request: Request) {
 
     // One demo company, so a device does not have to know its own tenant id to sign in.
     // A real deployment resolves this from the host name.
+    //
+    // Resolved from the address being signed in rather than from "the first organization",
+    // because a machine that has run the seed more than once — or run the test suite —
+    // holds more than one, and picking the oldest signs a presenter into an empty company
+    // with their own email and their own password, which looks exactly like a broken
+    // product. The newest match wins: that is the seed someone just built.
     const organizationId =
-      body.organizationId ??
-      (await db.organization.findFirstOrThrow({ orderBy: { createdAt: 'asc' }, select: { id: true } }))
-        .id;
+      body.organizationId ?? (await resolveOrganizationForSignIn(db, body.email));
 
     const meta = await requestMeta();
     const { session, context } = await signIn(db, {

@@ -536,6 +536,13 @@ export async function seedDemoCompany(
   );
   const historyEnd = new Date(today.getTime() - CURRENT_WINDOW_BACK_DAYS * 86_400_000);
 
+  // Finished work that never got invoiced. Nine jobs is a believable tail for a shop
+  // this size — enough that the oldest has been sitting for weeks, small enough that
+  // it reads as an oversight rather than a broken billing process.
+  const UNBILLED_JOB_COUNT = jobTarget >= 1000 ? 9 : 2;
+  const UNBILLED_WINDOW_DAYS = 30;
+  let unbilledRemaining = UNBILLED_JOB_COUNT;
+
   const monthWeights: { start: Date; weight: number }[] = [];
   for (let m = 0; m < 12; m++) {
     const start = new Date(Date.UTC(windowStart.getUTCFullYear(), windowStart.getUTCMonth() + m, 1));
@@ -587,6 +594,25 @@ export async function seedDemoCompany(
         serviceTypeId: serviceTypeByCode.get(serviceCode)!,
         vendorIds,
       });
+    }
+
+    // The oldest eligible jobs are the ones left unbilled, so the dashboard can say how
+    // long the worst of it has been waiting — a number that only means something if the
+    // completion date is real, which is why transitions are backdated above.
+    if (unbilledRemaining > 0) {
+      const cutoff = today.getTime() - UNBILLED_WINDOW_DAYS * 86_400_000;
+      const eligible = specs
+        .filter((spec) => spec.workDate.getTime() >= cutoff)
+        .sort((a, b) => a.workDate.getTime() - b.workDate.getTime());
+
+      // Spread across the window rather than taken off the front: nine jobs that all
+      // stopped being billed on the same afternoon reads as a data problem, and a real
+      // billing tail is a few from each week.
+      const stride = Math.max(1, Math.floor(eligible.length / Math.max(unbilledRemaining, 1)));
+      for (let i = 0; i < eligible.length && unbilledRemaining > 0; i += stride) {
+        eligible[i].leaveUnbilled = true;
+        unbilledRemaining--;
+      }
     }
 
     const results = await inBatches(specs, 8, (spec) => seedOneJob(db, ctx, spec));
@@ -731,8 +757,16 @@ export async function seedDemoCompany(
       scheduledStart: callbackDate,
     });
 
-    await transitionJob(db, ctx, callback.id, 'IN_PROGRESS');
-    await transitionJob(db, ctx, callback.id, 'COMPLETED');
+    // The technician who did the original goes back — which is exactly why the callback
+    // belongs on their scorecard, so the assignment has to exist for it to be counted.
+    await db.jobAssignment.create({
+      data: { jobId: callback.id, technicianId: tech.technicianId, isLead: true },
+    });
+
+    await transitionJob(db, ctx, callback.id, 'IN_PROGRESS', { occurredAt: callbackDate });
+    await transitionJob(db, ctx, callback.id, 'COMPLETED', {
+      occurredAt: new Date(callbackDate.getTime() + 90 * 60_000),
+    });
 
     const hours = rng.float(0.75, 2).toFixed(2);
     await postJournalEntry(db, ctx, {
@@ -833,6 +867,12 @@ interface OneJobInput {
    * board and a technician's phone something to actually look at.
    */
   stopAt?: 'SCHEDULED' | 'DISPATCHED' | 'EN_ROUTE' | 'IN_PROGRESS';
+  /**
+   * Worked and costed, but never invoiced — the finished job somebody forgot to bill.
+   * Every shop has a tail of these and it is the most actionable number on the
+   * dashboard, so the demo company has one rather than a suspiciously perfect zero.
+   */
+  leaveUnbilled?: boolean;
   vendorIds: { supply: string[]; sub: string[] };
 }
 
@@ -936,26 +976,34 @@ async function seedOneJob(
   });
 
   // ------------------------------------------------- how far this job has got
+  // Every transition is stamped with when it happened on this job's day, not with when
+  // the seed ran. Otherwise a year of history all completes at the same instant, and
+  // anything that reads completedAt — ageing, a monthly scorecard — reads a lie.
+  const at = (minutes: number) => new Date(workDate.getTime() + minutes * 60_000);
+
   if (input.stopAt) {
     if (input.stopAt !== 'SCHEDULED') {
-      await transitionJob(db, ctx, jobId, 'DISPATCHED');
+      await transitionJob(db, ctx, jobId, 'DISPATCHED', { occurredAt: at(-45) });
     }
     if (input.stopAt === 'EN_ROUTE' || input.stopAt === 'IN_PROGRESS') {
-      await transitionJob(db, ctx, jobId, 'EN_ROUTE');
+      await transitionJob(db, ctx, jobId, 'EN_ROUTE', { occurredAt: at(-20) });
     }
     if (input.stopAt === 'IN_PROGRESS') {
-      await transitionJob(db, ctx, jobId, 'IN_PROGRESS');
+      await transitionJob(db, ctx, jobId, 'IN_PROGRESS', { occurredAt: at(5) });
     }
     return { jobId, completed: false };
   }
 
-  await transitionJob(db, ctx, jobId, 'DISPATCHED');
-  await transitionJob(db, ctx, jobId, 'IN_PROGRESS');
-  await transitionJob(db, ctx, jobId, 'COMPLETED');
+  await transitionJob(db, ctx, jobId, 'DISPATCHED', { occurredAt: at(-45) });
+  await transitionJob(db, ctx, jobId, 'IN_PROGRESS', { occurredAt: at(0) });
 
   // ------------------------------------------------- actual cost
   const quotedHours = chosen.reduce((t, c) => t + Number(c.estimatedHours ?? '2'), 0);
   const actualHours = rng.normal(quotedHours, quotedHours * 0.22, 0.5, quotedHours * 2).toFixed(2);
+
+  await transitionJob(db, ctx, jobId, 'COMPLETED', {
+    occurredAt: at(Math.round(Number(actualHours) * 60)),
+  });
 
   await postJournalEntry(db, ctx, {
     entryDate: workDate,
@@ -1030,6 +1078,10 @@ async function seedOneJob(
   }
 
   // ------------------------------------------------- bill and collect
+  if (input.leaveUnbilled) {
+    return { jobId, completed: true, hours: Number(actualHours) };
+  }
+
   const invoice = await createInvoiceFromJob(db, ctx, { jobId, issueDate: workDate });
   await issueInvoice(db, ctx, invoice.id);
 

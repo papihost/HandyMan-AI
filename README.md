@@ -104,7 +104,7 @@ Resetting is safe by construction: it refuses on any organization whose `dataMod
 ## Testing
 
 ```bash
-npm test          # 276 tests: unit + integration against Postgres
+npm test          # 293 tests: unit + integration against Postgres
 npm run typecheck
 ```
 
@@ -153,13 +153,19 @@ and row locks on the document-number sequence. A mock would prove nothing about 
   IndexedDB for the day's work and queued photos, and screens for the whole visit — my day,
   the job with access notes and prior visits, on-site quoting from the price book, parts off
   the van, before/after photos, a change order signed on the glass, and completion.
+- The office web app: an owner dashboard, a dispatch board, jobs with ledger-backed costing
+  that drills into the journal entries the job posted, a journal entry viewer, financial
+  statements with account drill-down, receivables, and a price book review. Every figure on
+  every screen is read from posted journal lines or from the documents themselves — there is
+  no summary table a report could disagree with.
 
 The full path is covered end to end by `tests/workflow.test.ts`: a quote approved in the
 field becomes a job, the job becomes an invoice, the invoice posts to the general ledger,
 and the margin on that job is read back off the same journal lines the P&L is built from.
 
-**Next:** the offline field PWA, the import wizard, and the demo seed. See the build order
-in the blueprint.
+**Next:** a screen for the import wizard — the engine behind it is built and tested, but a
+migration is currently driven from a script rather than from the browser, so Act 1 of the
+demo has no UI yet.
 
 ## Architecture notes
 

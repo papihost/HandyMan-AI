@@ -51,15 +51,35 @@ Switch to **Diane, controller**.
 *The line:* "The field closed the job. Nobody in the office typed anything. The books are done."
 
 ### Act 4 — "What does it tell me I don't know?" (5 min)
-The **owner dashboard**: margin by location, tech utilization, callback rate by tech, quote
-close rate, unbilled completed jobs (money sitting on the table), AR aging.
+The **owner dashboard** opens with four numbers and then three findings, in the order an
+owner would want them. Each one is a different kind of problem, and none of them is visible
+in revenue.
 
-Show the margin anomaly flag: one service type in Scottsdale is quietly running at 11% gross
-margin because the flat-rate price hasn't moved since the material cost rose. Then show
-natural-language reporting: *"gross margin on drywall work in Phoenix last quarter."*
+1. **Money on the table.** Nine finished jobs were never invoiced, the oldest nearly a month
+   ago. One click to the list, one click to bill them.
+2. **A price that stopped moving.** *Drywall patch — small* returns about 8% over its
+   standard cost, on 369 calls; Scottsdale sells it at under 1%, because a branch override
+   set in 2023 is still in force. Follow the callout into **Price book review**: every flat
+   rate against the cost it carries, thinnest first, with the branches that disagree listed
+   under the item.
+
+   The point to make here: the *trade* looks fine. Drywall & Paint reads 54.8% because
+   painting a room earns 66% and carries the patches. A margin-by-trade report — the one
+   most field software ships — cannot find this. Only the price book can.
+3. **A branch that is priced correctly and still losing.** Scottsdale spends 24.3% of its
+   revenue on paid hours that never reached a job, against Phoenix's 10.6%. **Where the
+   branch margin goes** splits every dollar of cost into the part that landed on a job and
+   the part that landed on the branch and nothing else. Scottsdale's prices are in line with
+   its siblings; its dispatch board is not.
+
+Then the **technician scorecard**: utilization read out of the ledger rather than a
+timesheet — billable wage against total wage, so it cannot disagree with the P&L — and
+callback rate per technician. Teddy Brasch has the highest revenue on the board and the
+worst rework rate; Marcus Deleon bills less and almost never goes back.
 
 *The close:* "Three systems and a spreadsheet become one. And the one thing you've never had —
-true margin per job, per tech, per branch — is on the first screen you see every morning."
+true margin per job, per tech, per branch, per flat rate — is on the first screen you see
+every morning."
 
 ---
 
@@ -83,16 +103,25 @@ the summer, the last two weeks of December are dead.
 A demo where everything is tidy proves nothing. The seeded company has problems, because
 the product's value is that it surfaces them:
 
-- **Scottsdale's drywall work runs at a fraction of the margin of every other service
-  line.** The flat-rate price was set in 2023 and never revisited while board and compound
-  costs climbed. It is invisible in revenue and obvious in margin-by-service-type — this is
-  the anomaly to drill into in Act 4.
+- **Two drywall flat rates were priced in 2023 and never revisited** while board and
+  compound costs climbed, and Scottsdale carries a branch override that is lower still. They
+  return roughly 8% over standard cost company-wide and under 1% in Scottsdale, against 63%
+  or better for everything else in the book. Deliberately, this is *not* visible in
+  margin-by-trade — the paint work in the same trade carries it — which is the point of
+  showing the price book review in Act 4.
+- **Scottsdale spends about a quarter of its revenue on hours that never reach a job**,
+  roughly double the best-run branch. It is why the branch finishes fifteen points behind
+  Phoenix while pricing its trades identically, and it is a different conversation from the
+  price book: a dispatch problem, not a pricing one.
+- **Nine finished jobs were never invoiced**, spread across the last month, so the most
+  actionable number on the dashboard is not a suspiciously perfect zero.
 - **Some jobs are still in flight**, so the dispatch board has work on it rather than being
   a graveyard of completed calls.
 - **Some quotes are still open**, so the pipeline report has a pipeline.
 - **Some invoices are unpaid and ageing**, so the AR aging report has buckets.
-- **Warranty callbacks exist**, costed but never billed, sitting against the technician who
-  caused them.
+- **Warranty callbacks exist**, costed but never billed, assigned back to the technician who
+  did the original job so they land on that technician's scorecard. Rates run from under 1%
+  to nearly 11%, and the worst of them belongs to one of the highest earners on the board.
 - **Van stock has drifted** on some trucks and dropped below reorder point on others.
 - **Older periods are closed.** Try to post into one and the system refuses, which is the
   point of Act 3 step 6.
