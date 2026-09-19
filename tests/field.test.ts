@@ -5,7 +5,7 @@ import { buildAuthContext, systemContext, type AuthContext } from '../src/lib/au
 import { ACCOUNTS } from '../src/lib/accounting/chart-of-accounts';
 import { trialBalance } from '../src/lib/accounting/reports';
 import { postJournalEntry } from '../src/lib/accounting/ledger';
-import { jobCosting } from '../src/lib/jobs/costing';
+import { jobCosting, labourRateForJob } from '../src/lib/jobs/costing';
 import { createJob, transitionJob } from '../src/lib/jobs/service';
 import { receiveStock } from '../src/lib/inventory/service';
 import { createInvoiceFromJob, issueInvoice } from '../src/lib/invoices/service';
@@ -506,6 +506,21 @@ describe('an offline day, replayed', () => {
     expect(costing.laborCents).toBe(7000n); // 2.5 hrs at the 28.00 wage
     expect(costing.burdenCents).toBe(3140n);
     expect(costing.materialCents).toBe(840n); // 2 at 4.20
+
+    /*
+     * And what that hour really cost. The hours come back out of the ledger rather than
+     * off the timesheet: the posting used this technician's wage, so dividing what was
+     * posted by that wage returns the hours that were costed, and the figure on the job
+     * page cannot drift from the P&L.
+     */
+    const rate = await labourRateForJob(db, admin, job.id);
+    expect(rate).not.toBeNull();
+    expect(rate!.hours).toBe(2.5);
+    expect(rate!.baseHourlyCents).toBe(2800n);
+    expect(rate!.loadedHourlyCents).toBe(4056n);
+    expect(rate!.multiple).toBe(1.44);
+    // The wage is roughly seven tenths of the truth, which is the whole point of saying it.
+    expect(rate!.loadedHourlyCents * 25n / 10n).toBe(costing.laborCents + costing.burdenCents);
 
     const tb = await trialBalance(db, admin, {});
     expect(tb.isBalanced).toBe(true);

@@ -1103,14 +1103,27 @@ async function seedOneJob(
   const invoice = await createInvoiceFromJob(db, ctx, { jobId, issueDate: workDate });
   await issueInvoice(db, ctx, invoice.id);
 
-  // Most residential work is paid on the spot; commercial terms mean some is still open.
+  /*
+   * Most residential work is paid on the spot; commercial terms mean some is still open.
+   *
+   * The rest is chased, because a real company chases. A fixed share left unpaid for ever
+   * looks reasonable on one month and absurd on twelve: it accumulates into hundreds of
+   * invoices over ninety days old and a receivables screen saying this company has never
+   * collected anything, which is the opposite of what an ageing report is there to show.
+   * So an invoice that is not settled quickly is settled slowly, and only a small tail —
+   * the genuinely delinquent — is still open when it is old.
+   */
   const paidImmediately = rng.bool(0.72);
   const paidLater = !paidImmediately && rng.bool(0.6);
+  const chasedAndPaid = !paidImmediately && !paidLater && rng.bool(0.82);
 
-  if (paidImmediately || paidLater) {
+  if (paidImmediately || paidLater || chasedAndPaid) {
     const paidAt = paidImmediately
       ? workDate
-      : new Date(workDate.getTime() + rng.int(8, 52) * 86_400_000);
+      : new Date(
+          workDate.getTime() +
+            (paidLater ? rng.int(8, 52) : rng.int(55, 115)) * 86_400_000,
+        );
 
     if (paidAt <= new Date()) {
       const method = rng.weighted([

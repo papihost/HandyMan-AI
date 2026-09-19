@@ -146,3 +146,77 @@ export async function refreshJobRollup(
     },
   });
 }
+
+export interface LabourRate {
+  technicianName: string;
+  hours: number;
+  baseHourlyCents: Cents;
+  loadedHourlyCents: Cents;
+  /** Loaded cost as a multiple of the wage — the number most shops have never seen. */
+  multiple: number;
+}
+
+/**
+ * What an hour on this job actually cost.
+ *
+ * Every shop knows what it pays an hour. Far fewer know what an hour costs them once
+ * payroll taxes, workers' comp, benefits and the van are carried, and that gap is where
+ * flat-rate pricing quietly goes wrong — a price set against the wage is a price set
+ * against about seven tenths of the truth.
+ *
+ * Hours come back out of the ledger rather than from a timesheet: the labour posting used
+ * this technician's wage, so dividing what was posted by that wage returns exactly the
+ * hours that were costed, and the figure cannot drift from the P&L.
+ */
+export async function labourRateForJob(
+  db: PrismaClient,
+  ctx: AuthContext,
+  jobId: string,
+): Promise<LabourRate | null> {
+  requirePermission(ctx, PERMISSIONS.FINANCE_READ_COST);
+
+  const lead = await db.jobAssignment.findFirst({
+    where: { jobId, isLead: true },
+    select: {
+      technician: {
+        select: {
+          user: { select: { firstName: true, lastName: true } },
+          burdenRates: {
+            orderBy: { effectiveFrom: 'desc' },
+            take: 1,
+            select: { baseHourlyCents: true, loadedHourlyCents: true },
+          },
+        },
+      },
+    },
+  });
+
+  const rate = lead?.technician.burdenRates[0];
+  if (!rate || rate.baseHourlyCents <= ZERO) return null;
+
+  const labourAccount = await db.account.findFirst({
+    where: { organizationId: ctx.organizationId, code: ACCOUNTS.COGS_LABOR },
+    select: { id: true },
+  });
+  if (!labourAccount) return null;
+
+  const posted = await db.journalLine.aggregate({
+    where: {
+      jobId,
+      accountId: labourAccount.id,
+      journalEntry: { organizationId: ctx.organizationId, postedAt: { not: null } },
+    },
+    _sum: { debitCents: true },
+  });
+
+  const wageCents = posted._sum.debitCents ?? ZERO;
+  if (wageCents <= ZERO) return null;
+
+  return {
+    technicianName: `${lead!.technician.user.firstName} ${lead!.technician.user.lastName}`,
+    hours: Number((wageCents * 100n) / rate.baseHourlyCents) / 100,
+    baseHourlyCents: rate.baseHourlyCents,
+    loadedHourlyCents: rate.loadedHourlyCents,
+    multiple: Number((rate.loadedHourlyCents * 100n) / rate.baseHourlyCents) / 100,
+  };
+}

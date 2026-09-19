@@ -113,6 +113,7 @@ interface RunResult {
   notes: string[];
   reconciliation: {
     sourceTotalCents: string;
+    excludedTotalCents: string;
     importedTotalCents: string;
     matches: boolean;
     openingBalanceEquityCents: string;
@@ -482,6 +483,7 @@ export function ImportWizard({ cutoverDefault }: { cutoverDefault: string }) {
             <Outcome
               result={dry}
               reconciles={analysis.reconciles}
+              isTrialBalance={entity === 'TRIAL_BALANCE'}
               title="What a real run would do"
               footer={
                 <div className="flex flex-wrap items-center gap-3">
@@ -503,7 +505,12 @@ export function ImportWizard({ cutoverDefault }: { cutoverDefault: string }) {
           )}
 
           {committed && (
-            <Outcome result={committed} reconciles={analysis.reconciles} title="Imported" />
+            <Outcome
+              result={committed}
+              reconciles={analysis.reconciles}
+              isTrialBalance={entity === 'TRIAL_BALANCE'}
+              title="Imported"
+            />
           )}
         </>
       )}
@@ -982,16 +989,23 @@ function Preview({ analysis }: { analysis: Analysis }) {
 function Outcome({
   result,
   reconciles,
+  isTrialBalance,
   title,
   footer,
 }: {
   result: RunResult;
   reconciles: boolean;
+  isTrialBalance: boolean;
   title: string;
   footer?: React.ReactNode;
 }) {
   const reconciliation = result.reconciliation;
-  const difference = BigInt(reconciliation.sourceTotalCents) - BigInt(reconciliation.importedTotalCents);
+  // Against what was left to import, not against the file's headline total: a line whose
+  // subledger already came across was never this import's to write.
+  const difference =
+    BigInt(reconciliation.sourceTotalCents) -
+    BigInt(reconciliation.excludedTotalCents ?? '0') -
+    BigInt(reconciliation.importedTotalCents);
 
   return (
     <Panel
@@ -1015,11 +1029,13 @@ function Outcome({
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h3 className="font-semibold">Does it tie?</h3>
               {reconciliation.matches && reconciliation.isBalanced ? (
-                <Flag tone="good">the totals agree</Flag>
+                <Flag tone="good">
+                  {isTrialBalance ? 'opening equity clears to zero' : 'the totals agree'}
+                </Flag>
               ) : (
                 <Flag tone="critical">
-                  {reconciliation.matches
-                    ? 'does not balance'
+                  {isTrialBalance
+                    ? 'opening equity does not clear'
                     : `out by ${money(difference.toString())}`}
                 </Flag>
               )}

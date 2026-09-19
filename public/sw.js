@@ -9,7 +9,7 @@
  * quietly replaying a stale API response would hand the app data the sync engine never
  * agreed to, and the two would disagree about what the technician is looking at.
  */
-const SHELL = 'apex-field-shell-v1';
+const SHELL = 'apex-field-shell-v2';
 const SHELL_URLS = ['/field', '/manifest.webmanifest', '/icon.svg'];
 
 self.addEventListener('install', (event) => {
@@ -46,7 +46,23 @@ self.addEventListener('fetch', (event) => {
           caches.open(SHELL).then((cache) => cache.put(request, copy));
           return response;
         })
-        .catch(() => caches.match(request).then((cached) => cached ?? caches.match('/field'))),
+        .catch(async () => {
+          const cached = await caches.match(request);
+          if (cached) return cached;
+
+          /*
+           * A job page is only ever reached by client-side routing, so its document was
+           * never fetched and so is never in the cache. Answering with the day shell would
+           * put the day's list at a job's address — the technician reloads on site, and
+           * gets a screen that is not the job they are standing in, with none of its
+           * buttons, at a URL that says it is. Redirecting keeps the address and the
+           * screen telling the same story, and one tap re-enters the job from IndexedDB.
+           */
+          if (url.pathname !== '/field' && url.pathname.startsWith('/field')) {
+            return Response.redirect(new URL('/field', self.location.origin).href, 302);
+          }
+          return caches.match('/field');
+        }),
     );
     return;
   }

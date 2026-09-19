@@ -3,7 +3,7 @@ import { notFound } from 'next/navigation';
 import { db } from '../../../../lib/db';
 import { requireContext } from '../../../../server/session';
 import { formatMoney, sum } from '../../../../lib/money';
-import { jobCosting } from '../../../../lib/jobs/costing';
+import { jobCosting, labourRateForJob } from '../../../../lib/jobs/costing';
 import { PERMISSIONS } from '../../../../lib/auth/permissions';
 import { Bar, Flag, Money, Panel, StatTile } from '../../../../components/office/primitives';
 
@@ -43,6 +43,7 @@ export default async function OfficeJobPage({ params }: { params: Promise<{ id: 
 
   const canSeeCost = ctx.permissions.has(PERMISSIONS.FINANCE_READ_COST);
   const costing = canSeeCost ? await jobCosting(db, ctx, job.id) : null;
+  const labour = canSeeCost ? await labourRateForJob(db, ctx, job.id) : null;
 
   const entries = await db.journalEntry.findMany({
     where: {
@@ -121,7 +122,16 @@ export default async function OfficeJobPage({ params }: { params: Promise<{ id: 
           >
             <table>
               <tbody>
-                <CostRow label="Direct labour" cents={costing.laborCents} max={maxCost} />
+                <CostRow
+                  label="Direct labour"
+                  cents={costing.laborCents}
+                  max={maxCost}
+                  note={
+                    labour
+                      ? `${labour.hours.toFixed(2)} hrs at ${formatMoney(labour.baseHourlyCents)}/hr — ${labour.technicianName}'s wage`
+                      : undefined
+                  }
+                />
                 <CostRow
                   label="Labour burden"
                   cents={costing.burdenCents}
@@ -142,6 +152,18 @@ export default async function OfficeJobPage({ params }: { params: Promise<{ id: 
                     <Money cents={costing.totalCostCents} bold />
                   </td>
                 </tr>
+                {labour && (
+                  <tr>
+                    <td colSpan={3} className="text-sm" style={{ color: 'var(--ink-2)' }}>
+                      An hour of {labour.technicianName}&apos;s time is paid at{' '}
+                      {formatMoney(labour.baseHourlyCents)} and costs{' '}
+                      <strong>{formatMoney(labour.loadedHourlyCents)}</strong> —{' '}
+                      {labour.multiple.toFixed(2)}× the wage. A price set against the wage is a
+                      price set against about{' '}
+                      {Math.round((1 / labour.multiple) * 100)}% of what the hour costs.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </Panel>

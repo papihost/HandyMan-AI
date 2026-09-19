@@ -147,6 +147,8 @@ export interface ImportInput {
 
 export interface Reconciliation {
   sourceTotalCents: Cents;
+  /** Of the file's total, what this import was right not to write. Not a discrepancy. */
+  excludedTotalCents: Cents;
   importedTotalCents: Cents;
   declaredTotalCents: Cents | null;
   matches: boolean;
@@ -237,6 +239,7 @@ export async function runImport(
         const reconciliation = buildReconciliation({
           entity: input.entity,
           sourceTotalCents: validation.sourceTotalCents,
+          excludedTotalCents: write.deliberatelyExcludedCents,
           importedTotalCents: importedTotal,
           declaredTotalCents: input.declaredTotalCents ?? null,
           openingBalanceEquityCents: obe,
@@ -387,6 +390,8 @@ async function openingBalanceEquity(tx: Tx, organizationId: string): Promise<Cen
 function buildReconciliation(input: {
   entity: ImportEntity;
   sourceTotalCents: Cents;
+  /** What the file carried that this import was right not to write. Not a discrepancy. */
+  excludedTotalCents: Cents;
   importedTotalCents: Cents;
   declaredTotalCents: Cents | null;
   openingBalanceEquityCents: Cents;
@@ -396,9 +401,27 @@ function buildReconciliation(input: {
   totalRows: number;
   errorRows: number;
 }): Reconciliation {
+  // A trial balance line whose subledger already came across is not money that went
+  // missing — counting it as one had the reconciliation announcing a correct import as
+  // "out by" the receivables it had just been careful not to double count.
+  const comparable = input.sourceTotalCents - input.excludedTotalCents;
+
+  const balanced = input.openingBalanceEquityCents === ZERO;
+
+  /*
+   * A trial balance has no source-against-imported comparison to make. Its file total is
+   * both sides of every line added together and what posts is one side, so the two were
+   * never going to agree, and saying "out by" some six-figure number about a correct
+   * import is worse than saying nothing. What a trial balance has instead is the figure
+   * the whole migration hangs on: Opening Balance Equity, which clears to zero when the
+   * books came over whole and does not when they did not.
+   */
   const matches =
-    input.sourceTotalCents === input.importedTotalCents &&
-    (input.declaredTotalCents === null || input.declaredTotalCents === input.importedTotalCents);
+    input.entity === 'TRIAL_BALANCE'
+      ? balanced
+      : comparable === input.importedTotalCents &&
+        (input.declaredTotalCents === null ||
+          input.declaredTotalCents === input.importedTotalCents);
 
   const lines: string[] = [
     `Rows in file        ${String(input.totalRows).padStart(6)}   ` +
@@ -408,8 +431,23 @@ function buildReconciliation(input: {
       `errors ${String(input.errorRows).padStart(4)}`,
   ];
 
-  if (input.sourceTotalCents > ZERO || input.importedTotalCents > ZERO) {
+  if (input.entity === 'TRIAL_BALANCE') {
+    lines.push(`Opening balances posted ${formatMoney(input.importedTotalCents).padStart(11)}`);
+    if (input.excludedTotalCents > ZERO) {
+      lines.push(
+        `Left to its subledger   ${formatMoney(input.excludedTotalCents).padStart(11)}   ` +
+          'already carried over, not posted twice',
+      );
+    }
+  } else if (input.sourceTotalCents > ZERO || input.importedTotalCents > ZERO) {
     lines.push(`File total          ${formatMoney(input.sourceTotalCents).padStart(16)}`);
+    if (input.excludedTotalCents > ZERO) {
+      lines.push(
+        `Already carried over ${formatMoney(input.excludedTotalCents).padStart(15)}   ` +
+          'posted by its own subledger, not counted again',
+      );
+      lines.push(`Left to import      ${formatMoney(comparable).padStart(16)}`);
+    }
     lines.push(`Imported total      ${formatMoney(input.importedTotalCents).padStart(16)}`);
     if (input.declaredTotalCents !== null) {
       lines.push(
@@ -421,7 +459,6 @@ function buildReconciliation(input: {
 
   // The figure the whole migration hangs on. Anything but zero after the trial balance is
   // loaded means the books came over wrong.
-  const balanced = input.openingBalanceEquityCents === ZERO;
   lines.push(
     `Opening Balance Equity ${formatMoney(input.openingBalanceEquityCents).padStart(13)}   ` +
       (balanced
@@ -433,6 +470,7 @@ function buildReconciliation(input: {
 
   return {
     sourceTotalCents: input.sourceTotalCents,
+    excludedTotalCents: input.excludedTotalCents,
     importedTotalCents: input.importedTotalCents,
     declaredTotalCents: input.declaredTotalCents,
     matches,

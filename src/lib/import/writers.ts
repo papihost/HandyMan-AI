@@ -31,6 +31,14 @@ export interface WriteResult {
   updated: number;
   /** Total the reconciliation report compares against the source file. */
   importedTotalCents: Cents;
+  /**
+   * Amount the file carried that this import was right not to write: a trial balance line
+   * whose subledger already came across, or the opening equity plug the importer computes
+   * for itself. It is not a discrepancy, so the reconciliation deducts it from the file's
+   * total before comparing — otherwise a correct import reports itself as out by the
+   * receivables it deliberately declined to count twice.
+   */
+  deliberatelyExcludedCents: Cents;
   issues: RowIssue[];
   notes: string[];
 }
@@ -40,6 +48,7 @@ const empty = (): WriteResult => ({
   skipped: 0,
   updated: 0,
   importedTotalCents: ZERO,
+  deliberatelyExcludedCents: ZERO,
   issues: [],
   notes: [],
 });
@@ -560,6 +569,8 @@ export async function writeTrialBalance(
 
     if (subledgerBalances.has(record.accountCode)) {
       result.skipped++;
+      result.deliberatelyExcludedCents +=
+        record.debitCents > ZERO ? record.debitCents : record.creditCents;
       result.issues.push({
         line,
         field: 'accountCode',
@@ -573,6 +584,8 @@ export async function writeTrialBalance(
 
     if (record.accountCode === ACCOUNTS.OPENING_BALANCE_EQUITY) {
       result.skipped++;
+      result.deliberatelyExcludedCents +=
+        record.debitCents > ZERO ? record.debitCents : record.creditCents;
       result.issues.push({
         line,
         field: 'accountCode',
