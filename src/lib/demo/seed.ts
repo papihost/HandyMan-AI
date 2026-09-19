@@ -520,6 +520,22 @@ export async function seedDemoCompany(
     ],
   });
 
+  /**
+   * History stops a few days short of today, and the days either side of now are laid out
+   * deliberately below.
+   *
+   * Left to the random month generator, "today" gets whatever jobs happen to land on it —
+   * which is frequently none, and a demo that opens on a technician with an empty morning
+   * is over before it starts.
+   */
+  const CURRENT_WINDOW_BACK_DAYS = jobTarget >= 1000 ? 3 : 1;
+  const CURRENT_WINDOW_FORWARD_DAYS = jobTarget >= 1000 ? 5 : 1;
+  const JOBS_PER_TECH_PER_DAY = Math.max(
+    jobTarget >= 1000 ? 2 : 1,
+    Math.min(3, Math.round(jobTarget / (12 * 22 * TECHNICIANS.length))),
+  );
+  const historyEnd = new Date(today.getTime() - CURRENT_WINDOW_BACK_DAYS * 86_400_000);
+
   const monthWeights: { start: Date; weight: number }[] = [];
   for (let m = 0; m < 12; m++) {
     const start = new Date(Date.UTC(windowStart.getUTCFullYear(), windowStart.getUTCMonth() + m, 1));
@@ -550,7 +566,7 @@ export async function seedDemoCompany(
       const workDate = new Date(
         Date.UTC(month.start.getUTCFullYear(), month.start.getUTCMonth(), day, rng.int(8, 16)),
       );
-      if (workDate > today) continue;
+      if (workDate > historyEnd) continue;
 
       const candidate = customers.filter((c) => c.locationCode === location.code);
       if (candidate.length === 0) continue;
@@ -569,18 +585,8 @@ export async function seedDemoCompany(
         propertyId: customer.propertyId,
         itemBySku,
         serviceTypeId: serviceTypeByCode.get(serviceCode)!,
-        leaveInFlight: false,
         vendorIds,
       });
-    }
-
-    // Decided by count rather than per job: a coin flip can leave a small demo dataset
-    // with an empty dispatch board, which is the one thing it must never look like.
-    if (index === monthWeights.length - 1 && specs.length > 0) {
-      const inFlight = Math.max(1, Math.round(specs.length * 0.22));
-      for (const spec of rng.shuffle(specs).slice(0, inFlight)) {
-        spec.leaveInFlight = true;
-      }
     }
 
     const results = await inBatches(specs, 8, (spec) => seedOneJob(db, ctx, spec));
@@ -605,26 +611,76 @@ export async function seedDemoCompany(
         });
       }
     }
-    await postUnbilledTechnicianTime(db, ctx, {
-      month: month.start,
-      today,
-      techs,
-      billableHours,
-    });
-    billableHours = new Map();
+    // The month containing today is left open: this week's work belongs to it, and has
+    // not been created yet. It is costed and closed once it has.
+    const isCurrentMonth = index === monthWeights.length - 1;
+    if (!isCurrentMonth) {
+      await postUnbilledTechnicianTime(db, ctx, {
+        month: month.start,
+        today,
+        techs,
+        billableHours,
+      });
+      billableHours = new Map();
 
-    await postMonthEnd(db, ctx, {
-      month: month.start,
-      today,
-      rng,
-      locationByCode,
-      technicianCountByCode: Object.fromEntries(
-        LOCATIONS.map((l) => [l.code, techs.filter((t) => t.locationCode === l.code).length]),
-      ),
-    });
+      await postMonthEnd(db, ctx, {
+        month: month.start,
+        today,
+        rng,
+        locationByCode,
+        technicianCountByCode: Object.fromEntries(
+          LOCATIONS.map((l) => [l.code, techs.filter((t) => t.locationCode === l.code).length]),
+        ),
+      });
+    }
 
     log(`  ${month.start.toISOString().slice(0, 7)}: ${monthJobs} jobs`);
   }
+
+  // ---------------------------------------------------------------- this week
+  const thisWeek = await scheduleCurrentWeek(db, ctx, {
+    rng,
+    today,
+    backDays: CURRENT_WINDOW_BACK_DAYS,
+    forwardDays: CURRENT_WINDOW_FORWARD_DAYS,
+    perTechPerDay: JOBS_PER_TECH_PER_DAY,
+    techs,
+    customers,
+    locationByCode,
+    serviceTypeByCode,
+    itemBySku,
+    vendorIds,
+  });
+
+  jobsCreated += thisWeek.created;
+  for (const [technicianId, hours] of thisWeek.billableHours) {
+    billableHours.set(technicianId, (billableHours.get(technicianId) ?? 0) + hours);
+  }
+  completedJobs.push(...thisWeek.completedJobs);
+
+  const currentMonth = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
+  await postUnbilledTechnicianTime(db, ctx, {
+    month: currentMonth,
+    today,
+    techs,
+    billableHours,
+  });
+  billableHours = new Map();
+
+  await postMonthEnd(db, ctx, {
+    month: currentMonth,
+    today,
+    rng,
+    locationByCode,
+    technicianCountByCode: Object.fromEntries(
+      LOCATIONS.map((l) => [l.code, techs.filter((t) => t.locationCode === l.code).length]),
+    ),
+  });
+
+  log(
+    `  this week: ${thisWeek.created} jobs — ${thisWeek.todayCount} today, ` +
+      `${thisWeek.inFlightCount} already under way`,
+  );
 
   // ---------------------------------------------------------------- callbacks
   // Warranty rework, linked to the original job. Non-billable, but it still costs, which
@@ -771,8 +827,12 @@ interface OneJobInput {
   propertyId: string;
   itemBySku: Map<string, string>;
   serviceTypeId: string;
-  /** Left mid-flight so the dispatch board has live work on it. */
-  leaveInFlight: boolean;
+  /**
+   * Where this job stops. Undefined means it runs all the way through to an invoice;
+   * anything else leaves it sitting at that status, which is what gives the dispatch
+   * board and a technician's phone something to actually look at.
+   */
+  stopAt?: 'SCHEDULED' | 'DISPATCHED' | 'EN_ROUTE' | 'IN_PROGRESS';
   vendorIds: { supply: string[]; sub: string[] };
 }
 
@@ -875,12 +935,17 @@ async function seedOneJob(
     data: { jobId, technicianId: tech.technicianId, isLead: true },
   });
 
-  // ------------------------------------------------- work in the most recent weeks
-  // Some of the newest jobs are left mid-flight, so the dispatch board is not a graveyard
-  // of finished work.
-  if (input.leaveInFlight) {
-    await transitionJob(db, ctx, jobId, 'DISPATCHED');
-    if (rng.bool(0.5)) await transitionJob(db, ctx, jobId, 'IN_PROGRESS');
+  // ------------------------------------------------- how far this job has got
+  if (input.stopAt) {
+    if (input.stopAt !== 'SCHEDULED') {
+      await transitionJob(db, ctx, jobId, 'DISPATCHED');
+    }
+    if (input.stopAt === 'EN_ROUTE' || input.stopAt === 'IN_PROGRESS') {
+      await transitionJob(db, ctx, jobId, 'EN_ROUTE');
+    }
+    if (input.stopAt === 'IN_PROGRESS') {
+      await transitionJob(db, ctx, jobId, 'IN_PROGRESS');
+    }
     return { jobId, completed: false };
   }
 
@@ -1186,12 +1251,22 @@ async function postUnbilledTechnicianTime(
   const monthEnd = new Date(Date.UTC(input.month.getUTCFullYear(), input.month.getUTCMonth() + 1, 0, 17));
   const entryDate = monthEnd > input.today ? input.today : monthEnd;
 
+  /*
+   * A month that has not finished yet has not paid a full month's wages. Charging 173
+   * hours against nineteen days of work would report the current month as heavily
+   * unprofitable for no reason other than the calendar — and the current month is the one
+   * an owner looks at first.
+   */
+  const daysInMonth = monthEnd.getUTCDate();
+  const daysElapsed = monthEnd > input.today ? input.today.getUTCDate() : daysInMonth;
+  const paidHours = (PAID_HOURS_PER_MONTH * daysElapsed) / daysInMonth;
+
   const lines: Parameters<typeof postJournalEntry>[2]['lines'] = [];
   let total = 0n;
 
   for (const tech of input.techs) {
     const billed = input.billableHours.get(tech.technicianId) ?? 0;
-    const unbilled = PAID_HOURS_PER_MONTH - billed;
+    const unbilled = paidHours - billed;
     if (unbilled <= 0.05) continue;
 
     const hours = BigInt(Math.round(unbilled * 100));
@@ -1226,4 +1301,199 @@ async function postUnbilledTechnicianTime(
     memo: `Unbilled technician hours — ${input.month.toISOString().slice(0, 7)}`,
     lines,
   });
+}
+
+interface CurrentWeekInput {
+  rng: Rng;
+  today: Date;
+  backDays: number;
+  forwardDays: number;
+  /** Jobs per technician per working day. Derived from company volume, not guessed. */
+  perTechPerDay: number;
+  techs: SeededTech[];
+  customers: { id: string; propertyId: string; locationCode: string; priceTier: string | null }[];
+  locationByCode: Map<string, string>;
+  serviceTypeByCode: Map<string, string>;
+  itemBySku: Map<string, string>;
+  vendorIds: { supply: string[]; sub: string[] };
+}
+
+interface CurrentWeekResult {
+  created: number;
+  todayCount: number;
+  inFlightCount: number;
+  billableHours: Map<string, number>;
+  completedJobs: {
+    jobId: string;
+    techId: string;
+    date: Date;
+    serviceCode: ServiceCode;
+    locationCode: string;
+  }[];
+}
+
+/** The working day, in the order a technician drives it. */
+const DAY_SLOTS = [
+  { hour: 8, minute: 0 },
+  { hour: 10, minute: 30 },
+  { hour: 13, minute: 0 },
+  { hour: 15, minute: 30 },
+];
+
+const SLOT_LENGTH_MS = 2.5 * 60 * 60 * 1000;
+
+/**
+ * The days either side of now, laid out deliberately.
+ *
+ * Left to the random month generator, "today" gets whatever jobs happen to land on it,
+ * which is frequently none — and a demo that opens on a technician with an empty morning
+ * is over before it starts. More than that, a dispatch board is only worth looking at when
+ * it shows a day in progress: some calls finished, one technician mid-job, the afternoon
+ * still ahead, and the rest of the week filling up behind it.
+ *
+ * Status follows the clock. A slot that finished before now is completed and invoiced; the
+ * slot containing now is under way; the next one is on its way; the rest are dispatched or
+ * scheduled. Run at nine in the morning or four in the afternoon, the board looks right
+ * either way.
+ */
+async function scheduleCurrentWeek(
+  db: PrismaClient,
+  ctx: AuthContext,
+  input: CurrentWeekInput,
+): Promise<CurrentWeekResult> {
+  const { rng, today } = input;
+
+  /*
+   * How far the working day has got.
+   *
+   * Scheduled times are real — an eight o'clock job is at eight o'clock. But a demo run at
+   * six in the morning, or at ten at night, would show a board with nothing under way and
+   * every call still ahead, which is accurate and useless: the thing worth looking at is a
+   * day in progress. Outside working hours the *status* question is answered as if it were
+   * mid-morning, so a salesperson gets a live-looking board whenever they run the seed.
+   */
+  const WORKING_DAY_START = 8;
+  const WORKING_DAY_END = 17;
+  const DEMO_HOUR = 11;
+
+  const hour = today.getUTCHours();
+  const withinWorkingHours = hour >= WORKING_DAY_START && hour < WORKING_DAY_END;
+  const now = withinWorkingHours
+    ? today.getTime()
+    : Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), DEMO_HOUR, 15);
+
+  const specs: OneJobInput[] = [];
+  let todayCount = 0;
+
+  // Sunday is emergencies only, and a demo does not need them.
+  const days: { date: Date; offset: number }[] = [];
+  for (let offset = -input.backDays; offset <= input.forwardDays; offset++) {
+    const date = new Date(
+      Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() + offset),
+    );
+    if (date.getUTCDay() !== 0) days.push({ date, offset });
+  }
+
+  // The next day anyone actually works — which on a Saturday is Monday, not Sunday.
+  const nextWorkingDay = days.find((d) => d.offset > 0)?.offset ?? null;
+
+  for (const { date: day, offset } of days) {
+    for (const tech of input.techs) {
+      const count = Math.min(
+        DAY_SLOTS.length,
+        Math.max(1, input.perTechPerDay + rng.weighted([[-0, 55], [1, 30], [-1, 15]] as const)),
+      );
+
+      // Whoever is working, works the early slots; nobody starts their day at half three.
+      const slots = DAY_SLOTS.slice(0, count);
+      let inProgressUsed = false;
+
+      for (const slot of slots) {
+        const candidates = input.customers.filter((c) => c.locationCode === tech.locationCode);
+        if (candidates.length === 0) continue;
+
+        const customer = rng.pick(candidates);
+        const serviceCode = rng.pick(tech.skills);
+        const start = new Date(
+          Date.UTC(
+            day.getUTCFullYear(),
+            day.getUTCMonth(),
+            day.getUTCDate(),
+            slot.hour,
+            slot.minute,
+          ),
+        );
+
+        let stopAt: OneJobInput['stopAt'];
+
+        if (offset < 0) {
+          stopAt = undefined; // finished and invoiced
+        } else if (offset === 0) {
+          const slotEnd = start.getTime() + SLOT_LENGTH_MS;
+          if (slotEnd <= now) {
+            stopAt = undefined;
+          } else if (start.getTime() <= now && !inProgressUsed) {
+            stopAt = 'IN_PROGRESS';
+            inProgressUsed = true;
+          } else if (start.getTime() - now <= 90 * 60 * 1000) {
+            stopAt = 'EN_ROUTE';
+          } else {
+            stopAt = 'DISPATCHED';
+          }
+          todayCount++;
+        } else {
+          // The next working day is already assigned to a technician; further out is only
+          // booked in, because dispatch has not decided who is taking it yet.
+          stopAt = offset === nextWorkingDay ? 'DISPATCHED' : 'SCHEDULED';
+        }
+
+        specs.push({
+          rng: new Rng(rng.int(1, 2 ** 30)),
+          workDate: start,
+          tech,
+          serviceCode,
+          locationId: input.locationByCode.get(tech.locationCode)!,
+          locationCode: tech.locationCode,
+          customerId: customer.id,
+          propertyId: customer.propertyId,
+          itemBySku: input.itemBySku,
+          serviceTypeId: input.serviceTypeByCode.get(serviceCode)!,
+          stopAt,
+          vendorIds: input.vendorIds,
+        });
+      }
+    }
+  }
+
+  const results = await inBatches(specs, 8, (spec) => seedOneJob(db, ctx, spec));
+
+  const billableHours = new Map<string, number>();
+  const completedJobs: CurrentWeekResult['completedJobs'] = [];
+  let created = 0;
+  let inFlightCount = 0;
+
+  for (const [index, outcome] of results.entries()) {
+    if (!outcome) continue;
+    const spec = specs[index];
+    created++;
+
+    if (spec.stopAt) inFlightCount++;
+    if (outcome.hours) {
+      billableHours.set(
+        spec.tech.technicianId,
+        (billableHours.get(spec.tech.technicianId) ?? 0) + outcome.hours,
+      );
+    }
+    if (outcome.completed) {
+      completedJobs.push({
+        jobId: outcome.jobId,
+        techId: spec.tech.technicianId,
+        date: spec.workDate,
+        serviceCode: spec.serviceCode,
+        locationCode: spec.locationCode,
+      });
+    }
+  }
+
+  return { created, todayCount, inFlightCount, billableHours, completedJobs };
 }

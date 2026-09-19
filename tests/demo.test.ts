@@ -130,6 +130,52 @@ describe('the seeded books', () => {
     expect(inFlight).toBeGreaterThan(0);
   });
 
+  it('puts work on today, at a believable point in the day', async () => {
+    const dayStart = new Date(Date.UTC(TODAY.getUTCFullYear(), TODAY.getUTCMonth(), TODAY.getUTCDate()));
+    const dayEnd = new Date(dayStart.getTime() + 86_400_000);
+
+    const todaysJobs = await db.job.findMany({
+      where: { organizationId, scheduledStart: { gte: dayStart, lt: dayEnd } },
+      select: { status: true, scheduledStart: true },
+    });
+
+    // A demo that opens on a technician with an empty morning is over before it starts.
+    expect(todaysJobs.length).toBeGreaterThan(0);
+
+    // Some of the day is behind and some is ahead — a board where everything is still to
+    // come, or everything is finished, is not a working day.
+    const finished = todaysJobs.filter((j) =>
+      ['COMPLETED', 'INVOICED', 'PAID'].includes(j.status),
+    ).length;
+    const ahead = todaysJobs.filter((j) =>
+      ['SCHEDULED', 'DISPATCHED', 'EN_ROUTE', 'IN_PROGRESS'].includes(j.status),
+    ).length;
+
+    expect(finished).toBeGreaterThan(0);
+    expect(ahead).toBeGreaterThan(0);
+  });
+
+  it('books the coming days as well, so the schedule has a future', async () => {
+    const tomorrow = new Date(
+      Date.UTC(TODAY.getUTCFullYear(), TODAY.getUTCMonth(), TODAY.getUTCDate() + 1),
+    );
+
+    const upcoming = await db.job.count({
+      where: { organizationId, scheduledStart: { gte: tomorrow } },
+    });
+    expect(upcoming).toBeGreaterThan(0);
+
+    // Nothing in the future has been worked.
+    const workedAhead = await db.job.count({
+      where: {
+        organizationId,
+        scheduledStart: { gte: tomorrow },
+        status: { in: ['COMPLETED', 'INVOICED', 'PAID', 'CLOSED'] },
+      },
+    });
+    expect(workedAhead).toBe(0);
+  });
+
   it('leaves quotes unclosed, so the pipeline has something in it', async () => {
     const open = await db.quote.count({ where: { organizationId, status: 'SENT' } });
     expect(open).toBeGreaterThan(0);

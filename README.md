@@ -71,6 +71,12 @@ DEMO_JOBS=300 npm run db:seed    # smaller and faster, for development
 DEMO_SEED=42 npm run db:seed     # a different but equally reproducible company
 ```
 
+The seed lays out the days either side of now deliberately: the morning's calls are
+finished and invoiced, one technician is mid-job, the afternoon is still ahead, and the
+rest of the week is booked. Left to the random month generator, "today" gets whatever
+happens to land on it — frequently nothing, and a demo that opens on a technician with an
+empty morning is over before it starts. Re-run the seed on the day you present.
+
 Every financial figure is produced by the same posting engine the product uses. No journal
 entry is written directly and no dashboard number is a fixture — the first thing a
 prospect's controller does is drill into a figure, and if the trail ends at hardcoded data
@@ -98,7 +104,7 @@ Resetting is safe by construction: it refuses on any organization whose `dataMod
 ## Testing
 
 ```bash
-npm test          # 274 tests: unit + integration against Postgres
+npm test          # 276 tests: unit + integration against Postgres
 npm run typecheck
 ```
 

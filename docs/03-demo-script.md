@@ -97,6 +97,19 @@ the product's value is that it surfaces them:
 - **Older periods are closed.** Try to post into one and the system refuses, which is the
   point of Act 3 step 6.
 
+### Today looks like today
+
+The days either side of now are scheduled deliberately rather than left to the random
+month generator. The morning's calls are finished and invoiced, one technician is mid-job,
+the afternoon is still ahead, the next working day is assigned and the rest of the week is
+booked in. Status follows the clock, so a board run at nine in the morning and one run at
+four in the afternoon both look right.
+
+Outside working hours the *status* question is answered as if it were mid-morning. The
+scheduled times stay real — an eight o'clock job is at eight o'clock — but a seed run at
+six in the morning would otherwise produce a board with nothing under way and every call
+still ahead: accurate, and useless. **Re-run the seed on the day you present.**
+
 ### Reproducibility
 
 The same seed number produces the same company every time, so a demo script can name
