@@ -5,7 +5,11 @@ import { ACCOUNTS } from '../src/lib/accounting/chart-of-accounts';
 import { balanceSheet, trialBalance } from '../src/lib/accounting/reports';
 import { analyzeFile, rollbackImport, runImport, validateImport } from '../src/lib/import/runner';
 import { applyOverrides } from '../src/lib/import/mapping';
+import { MAX_UPLOAD_BYTES, prepareImport, readWizardRequest } from '../src/server/import';
 import { createTestOrg, utc, type TestOrg } from './factory';
+import { ZERO } from '../src/lib/money';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 /**
  * The migration is what decides whether a customer signs, so it is tested the way it will
@@ -464,5 +468,209 @@ describe('rollback', () => {
 
     expect(result.deletedRecords).toBe(3);
     expect(await db.customer.findUnique({ where: { id: customer.id } })).not.toBeNull();
+  });
+});
+
+/**
+ * The wizard's own layer.
+ *
+ * The screen keeps the uploaded file in the browser and sends it with every step, so this
+ * is where a request from a browser becomes the two arguments the engine takes — and where
+ * a correction the operator made on one screen has to survive into the next one.
+ */
+describe('the wizard request', () => {
+  it('refuses a file it was not told what to do with', () => {
+    expect(() => readWizardRequest({ text: CUSTOMER_CSV })).toThrow(/what this file holds/i);
+    expect(() => readWizardRequest({ entity: 'PAYROLL', text: CUSTOMER_CSV })).toThrow(
+      /what this file holds/i,
+    );
+  });
+
+  it('refuses an empty file and one too large to be a handyman company', () => {
+    expect(() => readWizardRequest({ entity: 'CUSTOMER', text: '   ' })).toThrow(/empty/i);
+    expect(() =>
+      readWizardRequest({ entity: 'CUSTOMER', text: 'x'.repeat(MAX_UPLOAD_BYTES + 1) }),
+    ).toThrow(/larger than/i);
+  });
+
+  it('ignores an override that is not a column index', () => {
+    const request = readWizardRequest({
+      entity: 'CUSTOMER',
+      text: CUSTOMER_CSV,
+      overrides: { email: 'the fourth one' },
+    });
+
+    expect(request.overrides).toBeUndefined();
+  });
+
+  it('detects the header row, and lets an operator overrule the detection', () => {
+    const detected = prepareImport(readWizardRequest({ entity: 'CUSTOMER', text: CUSTOMER_CSV }));
+    expect(detected.headerRow).toBe(4); // past the title block
+    expect(detected.parsed.header[0]).toBe('Customer');
+
+    // Told the headings are on the first line, it believes them — and finds a file with
+    // one column called "Apex Handyman Services", which is what the operator will see and
+    // is how they discover they were wrong.
+    const forced = prepareImport(
+      readWizardRequest({ entity: 'CUSTOMER', text: CUSTOMER_CSV, headerRow: 0 }),
+    );
+    expect(forced.headerRow).toBe(0);
+    expect(forced.parsed.header[0]).toBe('Apex Handyman Services');
+  });
+
+  it('carries a hand-made mapping through', () => {
+    const request = readWizardRequest({
+      entity: 'CUSTOMER',
+      text: CUSTOMER_CSV,
+      // "Main Phone" is column 5; claim it for notes instead, as a correction would.
+      overrides: { notes: 5, phone: null },
+    });
+    const { mapping } = prepareImport(request);
+
+    expect(mapping.fieldMap.notes).toBe(5);
+    expect(mapping.fieldMap.phone).toBeUndefined();
+  });
+
+  it('lets an operator settle a date order the file cannot prove', () => {
+    // Every day is under the thirteenth, so nothing in the file says which way round it is.
+    const ambiguous = [
+      'Num,Customer,Date,Amount',
+      '1,"Alvarez, Dana",01/02/2026,"100.00"',
+      '2,"Alvarez, Dana",03/04/2026,"200.00"',
+    ].join('\n');
+
+    const guessed = prepareImport(readWizardRequest({ entity: 'OPEN_INVOICE', text: ambiguous }));
+    expect(guessed.mapping.dateOrderAmbiguous).toBe(true);
+
+    const settled = prepareImport(
+      readWizardRequest({ entity: 'OPEN_INVOICE', text: ambiguous, dateOrder: 'DMY' }),
+    );
+    expect(settled.mapping.dateOrder).toBe('DMY');
+    expect(settled.mapping.dateOrderAmbiguous).toBe(false);
+  });
+});
+
+/**
+ * The sample exports the wizard offers, run the way a demo runs them.
+ *
+ * These files are what Act 1 is performed on, so a change to the generator that broke one
+ * of them would not be found until somebody was standing in front of a customer. The
+ * reconciliation catching the row that does not belong is the point of the act, so the
+ * test asserts it catches it — and that the corrected file then ties exactly.
+ */
+describe('the sample exports', () => {
+  const sample = (name: string) =>
+    readFileSync(join(process.cwd(), 'public', 'sample-exports', name), 'utf8');
+
+  const load = async (name: string, entity: Parameters<typeof analyzeFile>[1]) => {
+    const analyzed = analyzeFile(sample(name), entity);
+    return runImport(db, ctx, {
+      entity,
+      parsed: analyzed.parsed,
+      mapping: analyzed.mapping,
+      fileName: name,
+      cutoverDate: CUTOVER,
+    });
+  };
+
+  it('catch a dropped row all the way through to the opening balance', async () => {
+    await load('quickbooks-chart-of-accounts.csv', 'CHART_OF_ACCOUNTS');
+
+    const customers = await load('quickbooks-customers.csv', 'CUSTOMER');
+    expect(customers.imported).toBeGreaterThan(15);
+
+    const items = await load('price-book.csv', 'PRICE_BOOK_ITEM');
+    expect(items.imported).toBeGreaterThan(15);
+
+    // The row the act is about: an invoice raised against a name nobody has.
+    const aging = await load('quickbooks-ar-aging.csv', 'OPEN_INVOICE');
+    expect(aging.reconciliation.matches).toBe(false);
+    expect(aging.issues.some((issue) => issue.value === 'Ghost Customer Ltd')).toBe(true);
+    expect(
+      aging.reconciliation.sourceTotalCents - aging.reconciliation.importedTotalCents,
+    ).toBe(500_00n);
+
+    // And it does not quietly come right later. The trial balance's receivables line is
+    // the aging's full total, so the five hundred that never arrived is still missing when
+    // the opening entry lands — which is exactly what Opening Balance Equity is for.
+    const tb = await load('quickbooks-trial-balance.csv', 'TRIAL_BALANCE');
+    expect(tb.reconciliation.isBalanced).toBe(false);
+    expect(tb.reconciliation.openingBalanceEquityCents).toBe(-500_00n);
+
+    // The ledger itself still balances — a wrong import is not an unbalanced one, which is
+    // why the equity figure rather than the trial balance is the thing to watch.
+    const balance = await trialBalance(db, ctx, {});
+    expect(balance.isBalanced).toBe(true);
+  }, 120_000);
+
+  it('clear opening equity to zero once the flagged row is corrected', async () => {
+    await load('quickbooks-chart-of-accounts.csv', 'CHART_OF_ACCOUNTS');
+    await load('quickbooks-customers.csv', 'CUSTOMER');
+
+    const corrected = await load('quickbooks-ar-aging-corrected.csv', 'OPEN_INVOICE');
+    expect(corrected.reconciliation.matches).toBe(true);
+    expect(corrected.reconciliation.importedTotalCents).toBe(
+      corrected.reconciliation.sourceTotalCents,
+    );
+    expect(corrected.issues.filter((issue) => issue.severity === 'ERROR')).toEqual([]);
+
+    const tb = await load('quickbooks-trial-balance.csv', 'TRIAL_BALANCE');
+    expect(tb.reconciliation.openingBalanceEquityCents).toBe(ZERO);
+    expect(tb.reconciliation.isBalanced).toBe(true);
+
+    const balance = await trialBalance(db, ctx, {});
+    expect(balance.isBalanced).toBe(true);
+  }, 120_000);
+});
+
+describe('the words a source system actually uses', () => {
+  it('reads an item list that calls labour "Service" and a part an "Inventory Part"', async () => {
+    const csv = [
+      'Item Name/Number,Sales Description,Item Type,Purchase Cost,Sales Price',
+      'PLM-TOIL-R,Replace standard toilet,Service,"242.82","485.00"',
+      'PRT-WAX,Wax ring kit,Inventory Part,"3.80","12.00"',
+      'SUB-TILE,Tile work,Subcontractor,"180.00","450.00"',
+      'PLAN-GOLD,Annual service plan,Service Plan,"0.00","349.00"',
+    ].join('\n');
+
+    const analyzed = analyzeFile(csv, 'PRICE_BOOK_ITEM');
+    const report = validateImport('PRICE_BOOK_ITEM', analyzed.parsed, analyzed.mapping);
+
+    // Not one warning: every one of those words is a word the file was always going to use.
+    expect(report.issues.filter((issue) => issue.field === 'category')).toEqual([]);
+
+    await runImport(db, ctx, {
+      entity: 'PRICE_BOOK_ITEM',
+      parsed: analyzed.parsed,
+      mapping: analyzed.mapping,
+      cutoverDate: CUTOVER,
+    });
+
+    const items = await db.priceBookItem.findMany({
+      where: { organizationId: org.organizationId },
+      select: { sku: true, category: true },
+      orderBy: { sku: 'asc' },
+    });
+
+    // The category picks the revenue account and the tax treatment, so filing a service
+    // as a material is a tax position rather than a cosmetic slip.
+    expect(Object.fromEntries(items.map((item) => [item.sku, item.category]))).toEqual({
+      'PLAN-GOLD': 'AGREEMENT',
+      'PLM-TOIL-R': 'LABOR',
+      'PRT-WAX': 'MATERIAL',
+      'SUB-TILE': 'SUBCONTRACT',
+    });
+  });
+
+  it('still says so when a value is one nobody uses', () => {
+    const csv = [
+      'Item Name/Number,Sales Description,Item Type,Sales Price',
+      'X-1,Something,Widgetry,"10.00"',
+    ].join('\n');
+
+    const analyzed = analyzeFile(csv, 'PRICE_BOOK_ITEM');
+    const report = validateImport('PRICE_BOOK_ITEM', analyzed.parsed, analyzed.mapping);
+
+    expect(report.issues.some((issue) => /Widgetry/.test(issue.message))).toBe(true);
   });
 });

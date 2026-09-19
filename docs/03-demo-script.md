@@ -9,12 +9,35 @@ point, and it is what survives a CFO poking at it.
 ---
 
 ### Act 1 — "Can you hold my data?" (4 min)
-Open the **Import Wizard**. Drop in a messy sample export from their current system. Show the
-AI proposing the column mapping, the validation catching three duplicate customers and two
-malformed dates, the dry run, and then the **reconciliation report** proving the AR total
-matches their source system to the penny and Opening Balance Equity clears to zero.
+**Migration** in the office nav. Five steps in the order they have to happen — accounts,
+customers, price book, open invoices, trial balance — because invoices need customers and
+everything needs accounts.
 
-*The line:* "Your books come over balanced, and we prove it before we write a single row."
+Each step offers the matching sample export, so nothing depends on having their files in the
+room. If they brought their own, use theirs.
+
+1. **Customers.** Load the sample. It is a real QuickBooks contact list: a title block on
+   top, "Surname, Forename" in the first column, an address with a comma in it, the same
+   household twice, an email that is not an email. The screen reports what it found — 23
+   rows, comma-separated, headings on line 5 — and maps every column, with the reason for
+   each one and a wording for how sure it is. Change one by hand and watch the checks below
+   rerun.
+2. **Dry run.** Twenty would be added, two skipped, one could not be read, each with its own
+   line number in the file they will open to fix it. Nothing was written: the whole import
+   really ran inside a transaction that was then rolled back, which is why those are counts
+   and not estimates.
+3. **Import for real**, and it appears in the batch list with a Reverse button beside it.
+4. **Open invoices** — the moment the act is for. The sample aging carries a row raised
+   against "Ghost Customer Ltd", a name that exists in no customer list. The dry run skips
+   it, says why, and the reconciliation reads **out by 500.00**. Keep going and it does not
+   come right: the trial balance's receivables line is the aging's full total, so Opening
+   Balance Equity ends at 500.00 instead of zero and the migration is provably wrong.
+5. Load **the corrected export** — the same report with that one row fixed, which is what
+   their bookkeeper would send back — and the reconciliation reads **the totals agree**,
+   22,740.75 against 22,740.75, and opening equity clears to zero.
+
+*The line:* "Your books come over balanced, and we prove it before we write a single row —
+and when they would not have, we say so instead of finding out in March."
 
 ### Act 2 — "Can my techs use it?" (8 min)
 Switch to a phone-sized window, logged in as **Marcus, technician, Mesa**.

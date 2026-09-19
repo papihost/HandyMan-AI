@@ -1,0 +1,16 @@
+Apex Handyman Services
+Trial Balance
+As of 31 December 2025
+
+Account Number,Account,Debit,Credit
+1010,Operating Bank Account,"52,400.00",
+1200,Accounts Receivable,"22,740.75",
+1300,Inventory — Warehouse,"18,250.00",
+1310,Inventory — Vans,"6,840.00",
+1500,Vehicles & Equipment,"96,000.00",
+1590,Accumulated Depreciation,,"31,200.00"
+2010,Accounts Payable,,"14,880.00"
+2100,Sales Tax Payable,,"3,912.00"
+2200,Payroll Liabilities,,"2,645.00"
+2300,Customer Deposits,,"1,750.00"
+3010,Owner’s Equity,,"141,843.75"

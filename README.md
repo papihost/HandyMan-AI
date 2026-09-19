@@ -104,7 +104,7 @@ Resetting is safe by construction: it refuses on any organization whose `dataMod
 ## Testing
 
 ```bash
-npm test          # 293 tests: unit + integration against Postgres
+npm test          # 304 tests: unit + integration against Postgres
 npm run typecheck
 ```
 
@@ -158,14 +158,19 @@ and row locks on the document-number sequence. A mock would prove nothing about 
   statements with account drill-down, receivables, and a price book review. Every figure on
   every screen is read from posted journal lines or from the documents themselves — there is
   no summary table a report could disagree with.
+- The migration wizard: the five entities in dependency order, detection you can overrule,
+  a mapping table listed by target field with the reason for each match, validation that
+  reruns as you change it, a dry run that really executes and is rolled back, the
+  reconciliation, and a batch list with a reverse button. Sample exports ship with it, so a
+  migration can be demonstrated without the customer's files in the room.
 
 The full path is covered end to end by `tests/workflow.test.ts`: a quote approved in the
 field becomes a job, the job becomes an invoice, the invoice posts to the general ledger,
 and the margin on that job is read back off the same journal lines the P&L is built from.
 
-**Next:** a screen for the import wizard — the engine behind it is built and tested, but a
-migration is currently driven from a script rather than from the browser, so Act 1 of the
-demo has no UI yet.
+**Next:** nothing is blocking a demo. The obvious things after that are inbound payment
+capture from the field, a customer-facing portal, and scheduled service agreements moving
+from the data model into screens.
 
 ## Architecture notes
 

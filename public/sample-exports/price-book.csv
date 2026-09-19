@@ -1,0 +1,23 @@
+Item Name/Number,Sales Description,Item Type,Purchase Cost,Sales Price,U/M,Field7,Notes
+PLM-TOIL-R,Replace standard toilet,Service,242.82,485.00,ea,N,
+PLM-FAUC-R,Replace kitchen faucet,Service,98.00,325.00,ea,N,
+PLM-DISP-R,Replace garbage disposal,Service,115.00,375.00,ea,N,
+PLM-LEAK-R,Repair under-sink leak,Service,64.00,245.00,ea,N,
+PLM-WH-R,Replace 50 gal water heater,Service,620.00,"1,680.00",ea,N,
+ELE-OUTL-R,Replace outlet or switch,Service,39.00,165.00,ea,N,
+ELE-FAN-I,Install ceiling fan,Service,92.00,315.00,ea,N,
+ELE-GFCI-I,Install GFCI circuit,Service,118.00,395.00,ea,N,
+DRY-PATCH-S,Drywall patch — small,Service,139.00,155.00,ea,N,Priced 2023
+DRY-PATCH-L,Drywall patch — large,Service,248.00,275.00,ea,N,Priced 2023
+DRY-ROOM-P,Paint single room,Service,185.00,545.00,ea,N,
+CRP-TRIM-R,Baseboard and trim repair,Service,88.00,295.00,ea,N,
+CRP-CAB-R,Cabinet door and hinge repair,Service,56.00,215.00,ea,N,
+DRS-LOCK-R,Rekey or replace lockset,Service,52.00,195.00,ea,N,
+GEN-HONEY,Honey-do list — half day,Service,162.00,495.00,ea,N,
+GEN-MOUNT,TV or mirror mounting,Service,58.00,215.00,ea,N,
+PRT-WAX-RING,Wax ring kit,Inventory Part,3.80,12.00,ea,Y,24
+PRT-SUP-LINE,Braided supply line,Inventory Part,4.20,14.00,ea,Y,36
+PRT-GFCI-15,GFCI receptacle 15A,Inventory Part,11.80,34.00,ea,Y,20
+PRT-CAULK,Paintable caulk,Inventory Part,3.10,14.00,tube,Y,48
+PRT-DW-SHEET,Drywall sheet 4x8,Inventory Part,14.50,38.00,ea,Y,16
+PRT-HINGE,Cabinet hinge pair,Inventory Part,4.60,16.00,pr,Y,30

@@ -9,6 +9,7 @@ import { inventoryValuation } from '../src/lib/inventory/reports';
 import { signIn } from '../src/lib/auth/service';
 import { DEMO_PASSWORD, seedDemoCompany } from '../src/lib/demo/seed';
 import { assertDemoOrganization, deleteDemoOrganization } from '../src/lib/demo/reset';
+import { createCustomer } from '../src/lib/customers/service';
 
 /**
  * The demo company is what a prospect actually sees, so it is tested like a feature: the
@@ -39,6 +40,36 @@ afterAll(async () => {
   // stale company holding the same demo users is a very confusing thing to land in.
   await deleteDemoOrganization(db, organizationId);
   await db.$disconnect();
+});
+
+describe('carrying on from a seeded company', () => {
+  /*
+   * A demo is not a dead end: the first thing anyone does with one is add something. The
+   * seed bulk-inserts its customers with numbers it allocates itself, so it also has to
+   * advance the sequence those numbers came from — and when it did that with an update
+   * rather than an upsert, the row did not exist yet, the update matched nothing, and the
+   * next customer anybody added was handed a number somebody already had.
+   */
+  it('hands the next customer a number nobody already has', async () => {
+    const ctx = systemContext(organizationId);
+
+    const created = await createCustomer(db, ctx, {
+      lastName: 'Newcomer',
+      property: { addressLine1: '1 New St', city: 'Mesa', state: 'AZ', postalCode: '85201' },
+    });
+
+    const clash = await db.customer.count({
+      where: { organizationId, customerNo: created.customerNo },
+    });
+    expect(clash).toBe(1);
+
+    const highestSeeded = await db.customer.findFirstOrThrow({
+      where: { organizationId, id: { not: created.id } },
+      orderBy: { customerNo: 'desc' },
+      select: { customerNo: true },
+    });
+    expect(created.customerNo > highestSeeded.customerNo).toBe(true);
+  });
 });
 
 describe('the seeded books', () => {

@@ -1,0 +1,33 @@
+Apex Handyman Services
+Account Listing
+As of 31 December 2025
+
+Account Number,Account,Type,Description
+1010,Operating Bank Account,Bank,Main checking
+1020,Payroll Bank Account,Bank,
+1100,Undeposited Funds,Other Current Asset,
+1200,Accounts Receivable,Accounts Receivable,
+1300,Inventory — Warehouse,Other Current Asset,
+1310,Inventory — Vans,Other Current Asset,
+1500,Vehicles & Equipment,Fixed Asset,
+1590,Accumulated Depreciation,Fixed Asset,Contra
+2010,Accounts Payable,Accounts Payable,
+2100,Sales Tax Payable,Other Current Liability,
+2200,Payroll Liabilities,Other Current Liability,
+2300,Customer Deposits,Other Current Liability,Held until earned
+3010,Owner’s Equity,Equity,
+3900,Opening Balance Equity,Equity,
+4010,Labor Income,Income,
+4020,Materials Income,Income,
+4030,Trip & Service Fees,Income,
+5010,Direct Labor,Cost of Goods Sold,
+5020,Labor Burden,Cost of Goods Sold,"Taxes, comp, benefits, vehicle"
+5030,Materials & Parts,Cost of Goods Sold,
+5040,Subcontracted Work,Cost of Goods Sold,
+6010,Rent,Expense,
+6020,Insurance,Expense,
+6030,Advertising,Expense,
+6040,Office & Software,Expense,
+6050,Vehicle Expense,Expense,
+6060,Merchant Fees,Expense,
+6900,Depreciation,Expense,

@@ -10,6 +10,7 @@ const NAV = [
   { href: '/office/invoices', label: 'Receivables' },
   { href: '/office/pricing', label: 'Pricing' },
   { href: '/office/financials', label: 'Financials' },
+  { href: '/office/import', label: 'Migration' },
 ];
 
 export default async function OfficeLayout({ children }: { children: React.ReactNode }) {

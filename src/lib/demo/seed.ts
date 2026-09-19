@@ -410,9 +410,27 @@ export async function seedDemoCompany(
   }
 
   await db.customer.createMany({ data: customerRows });
-  await db.documentSequence.updateMany({
-    where: { organizationId: org.id, docType: 'CUSTOMER', locationCode: '' },
-    data: { nextValue: firstCustomerNo + customerTarget },
+
+  // Upsert, not update: nothing has allocated a customer number yet, so the sequence row
+  // does not exist and an update would match nothing and report success. The next customer
+  // anyone adds would then be handed C-00001, which already belongs to someone.
+  await db.documentSequence.upsert({
+    where: {
+      organizationId_docType_locationCode: {
+        organizationId: org.id,
+        docType: 'CUSTOMER',
+        locationCode: '',
+      },
+    },
+    create: {
+      organizationId: org.id,
+      docType: 'CUSTOMER',
+      locationCode: '',
+      prefix: 'C-',
+      padding: 5,
+      nextValue: firstCustomerNo + customerTarget,
+    },
+    update: { nextValue: firstCustomerNo + customerTarget },
   });
 
   const createdCustomers = await db.customer.findMany({

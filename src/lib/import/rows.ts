@@ -148,11 +148,28 @@ class RowReader {
     return result.value;
   }
 
-  enum<T extends string>(field: string, allowed: readonly T[], fallback: T): T {
+  /**
+   * An enum, read the way the source system writes it.
+   *
+   * `synonyms` carries the vocabulary real exports use — an accounting package calls a
+   * labour line "Service" and a stocked part an "Inventory Part", and neither is a value
+   * in any enum here. Without them every row of such a file warns and falls back, which
+   * both buries the real problems and files the work under the wrong revenue account.
+   */
+  enum<T extends string>(
+    field: string,
+    allowed: readonly T[],
+    fallback: T,
+    synonyms: Readonly<Record<string, T>> = {},
+  ): T {
     const raw = this.raw(field).trim();
     if (!raw) return fallback;
 
     const normalized = raw.toUpperCase().replace(/[\s-]+/g, '_');
+
+    const known = synonyms[normalized];
+    if (known) return known;
+
     const exact = allowed.find((a) => a === normalized);
     if (exact) return exact;
 
@@ -250,6 +267,7 @@ export function buildCustomerRow(
       'type',
       ['RESIDENTIAL', 'COMMERCIAL', 'PROPERTY_MANAGER', 'BUILDER'] as const,
       companyName ? 'COMMERCIAL' : 'RESIDENTIAL',
+      CUSTOMER_TYPE_ALIASES,
     ),
     companyName,
     firstName,
@@ -312,6 +330,7 @@ export function buildPriceBookRow(
       'category',
       ['LABOR', 'MATERIAL', 'AGREEMENT', 'FEE', 'SUBCONTRACT'] as const,
       'MATERIAL',
+      ITEM_CATEGORY_ALIASES,
     ),
     costCents,
     priceCents,
@@ -334,6 +353,51 @@ export interface AccountRow {
 }
 
 /** Account types are named a dozen ways across packages; map the common ones. */
+/**
+ * What an accounting package calls a line on an item list.
+ *
+ * "Service" is labour and "Inventory Part" is material — and the difference is not
+ * cosmetic: the category picks the revenue account the sale posts to and how sales tax
+ * treats it, so a file of services filed as materials is a tax position, not a typo.
+ */
+const ITEM_CATEGORY_ALIASES: Record<string, LineCategory> = {
+  SERVICE: 'LABOR',
+  SERVICES: 'LABOR',
+  LABOUR: 'LABOR',
+  FLAT_RATE: 'LABOR',
+  INVENTORY_PART: 'MATERIAL',
+  NON_INVENTORY_PART: 'MATERIAL',
+  PART: 'MATERIAL',
+  PARTS: 'MATERIAL',
+  PRODUCT: 'MATERIAL',
+  INVENTORY_ASSEMBLY: 'MATERIAL',
+  OTHER_CHARGE: 'FEE',
+  DISCOUNT: 'FEE',
+  SUBCONTRACTOR: 'SUBCONTRACT',
+  SUBCONTRACTED: 'SUBCONTRACT',
+  SERVICE_PLAN: 'AGREEMENT',
+  CONTRACT: 'AGREEMENT',
+  MAINTENANCE_PLAN: 'AGREEMENT',
+};
+
+/** How a customer list describes an account it holds. */
+const CUSTOMER_TYPE_ALIASES: Record<string, CustomerType> = {
+  RESIDENCE: 'RESIDENTIAL',
+  HOME: 'RESIDENTIAL',
+  HOMEOWNER: 'RESIDENTIAL',
+  INDIVIDUAL: 'RESIDENTIAL',
+  BUSINESS: 'COMMERCIAL',
+  COMPANY: 'COMMERCIAL',
+  COMMERCIAL_ACCOUNT: 'COMMERCIAL',
+  PROPERTY_MANAGEMENT: 'PROPERTY_MANAGER',
+  PROPERTY_MGR: 'PROPERTY_MANAGER',
+  LANDLORD: 'PROPERTY_MANAGER',
+  HOA: 'PROPERTY_MANAGER',
+  GENERAL_CONTRACTOR: 'BUILDER',
+  CONTRACTOR: 'BUILDER',
+  DEVELOPER: 'BUILDER',
+};
+
 const ACCOUNT_TYPE_ALIASES: Record<string, AccountType> = {
   BANK: 'ASSET',
   ACCOUNTS_RECEIVABLE: 'ASSET',
@@ -363,16 +427,12 @@ export function buildAccountRow(
   const code = r.text('code', { required: true, maxLength: 32 });
   const name = r.text('name', { required: true, maxLength: 200 });
 
-  const rawType = ctx.fieldMap['type'] !== undefined ? (values[ctx.fieldMap['type']] ?? '') : '';
-  const aliased = ACCOUNT_TYPE_ALIASES[rawType.trim().toUpperCase().replace(/[\s-]+/g, '_')];
-
-  const type =
-    aliased ??
-    r.enum(
-      'type',
-      ['ASSET', 'LIABILITY', 'EQUITY', 'REVENUE', 'COGS', 'EXPENSE', 'OTHER_INCOME', 'OTHER_EXPENSE'] as const,
-      'EXPENSE',
-    );
+  const type = r.enum(
+    'type',
+    ['ASSET', 'LIABILITY', 'EQUITY', 'REVENUE', 'COGS', 'EXPENSE', 'OTHER_INCOME', 'OTHER_EXPENSE'] as const,
+    'EXPENSE',
+    ACCOUNT_TYPE_ALIASES,
+  );
 
   const record: AccountRow = {
     code: code ?? '',

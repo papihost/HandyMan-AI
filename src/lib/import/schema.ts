@@ -83,8 +83,12 @@ export const ENTITY_FIELDS: Record<ImportEntity, TargetField[]> = {
 
   PRICE_BOOK_ITEM: [
     T('sku', 'SKU or item code', 'text', ['sku', 'item', 'item code', 'code', 'part number', 'part #', 'item name/number'], { required: true }),
-    T('name', 'Name', 'text', ['name', 'item name', 'description', 'title'], { required: true }),
-    T('description', 'Long description', 'text', ['long description', 'sales description', 'details', 'notes']),
+    // An item export from an accounting package has no column called "name": the name a
+    // customer reads is the sales description, and the item number is the code. Claiming
+    // "sales description" here rather than for the long-description field is what makes
+    // such a file map without an operator having to reassign the one required column.
+    T('name', 'Name', 'text', ['name', 'item name', 'description', 'title', 'sales description', 'description on sales transactions'], { required: true }),
+    T('description', 'Long description', 'text', ['long description', 'details', 'notes', 'memo']),
     T('category', 'Category', 'enum', ['category', 'type', 'item type', 'line type'], {
       enumValues: ['LABOR', 'MATERIAL', 'AGREEMENT', 'FEE', 'SUBCONTRACT'],
     }),

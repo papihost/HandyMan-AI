@@ -67,6 +67,49 @@ instead of silently creating a broken ledger.
 - **Rollback** — because every record carries `importBatchId`, an entire batch can be reversed
   (GL entries reversed, records soft-deleted) up until the first live transaction is recorded.
 
+### The screen
+
+`/office/import`, for a role holding `import:run`. The five entities are a rail across the
+top in dependency order, ticked as each one loads.
+
+The uploaded file stays in the browser and travels with every request rather than being
+staged server-side, so an abandoned migration leaves nothing behind and there is no
+half-finished upload to expire. Re-parsing a few thousand rows costs less than the round
+trip that carried them, and detection is redone on each call unless the operator has stated
+a delimiter or a header row — a correction has to survive into the next step or the mapping
+screen silently un-fixes itself.
+
+The mapping table is listed **by target field, not by source column**. The question being
+answered is "where does the invoice number come from", not "what shall I do with column 7",
+and a required field that nothing feeds has to be visible as a gap — which a list of source
+columns cannot show. Confidence is shown as a word (certain / likely / worth checking) with
+the reason beside it, because a number between 0 and 1 is not something anyone can act on.
+
+Changing any mapping re-runs detection, validation and the preview, and discards the dry
+run: a wizard that validates once, at the start, teaches an operator to distrust it the
+first time they fix a column and the errors do not move.
+
+Panels that cannot say anything are not shown. A customer list has no dates and no amounts,
+so it gets no date-order control and no reconciliation — a "does it tie?" panel reading
+0.00 against 0.00 and declaring itself satisfied teaches an operator to stop reading the
+one that matters.
+
+### Sample exports
+
+`public/sample-exports/`, built by `scripts/build-sample-exports.mjs` and offered as a
+button on each step, so a demo does not depend on having the customer's files in the room.
+
+They are generated rather than hand-written because the figures have to tie: the trial
+balance's receivables line is the sum of the open balances in the A/R aging, to the cent.
+The aging also carries one invoice raised against a customer who is not on the customer
+list, so the reconciliation has something real to catch — and `quickbooks-ar-aging-corrected.csv`
+is the same report with that row fixed, which is what a bookkeeper would send back.
+
+`tests/import.test.ts` runs both paths end to end: the uncorrected file leaves Opening
+Balance Equity at 500.00 after the trial balance loads, and the corrected one clears it to
+zero. A change to the generator that broke the demo would otherwise not be found until
+somebody was standing in front of a customer.
+
 ## 4. Re-import and delta sync
 
 Migration is rarely one shot. The customer will run a trial import, keep working in the old
