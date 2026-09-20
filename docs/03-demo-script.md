@@ -94,31 +94,37 @@ margins."
 ### Act 3 — "Are the books right?" (8 min)
 Switch to **Diane Kowalczyk, controller**.
 
-1. **Jobs → a completed job.** Revenue, cost and margin, all read from posted journal lines
+1. **Receivables → an invoice** — pick one with parts on it as well as labour, so the
+   revenue split has something to split. It shows what was billed with the cost that stood
+   behind each line, and **how the tax was worked out**: the jurisdiction, the base it was
+   applied to and the rate, resolved on the service address rather than the billing one.
+   Then **View journal entry**: receivable, labour revenue, materials revenue and sales tax,
+   posted by the invoice rather than by anybody typing. The entry links back to the invoice,
+   so the trip runs both ways.
+2. **Jobs → a completed job.** Revenue, cost and margin, all read from posted journal lines
    rather than from a cached column.
-2. **What it cost**, broken out: direct labour with the hours and the wage behind it, labour
+3. **What it cost**, broken out: direct labour with the hours and the wage behind it, labour
    burden, materials. Under it, the sentence the act is really for — *an hour of this
    technician's time is paid at $38.00 and costs $52.73, 1.38× the wage; a price set against
    the wage is a price set against about 72% of what the hour costs.* Most shops in this
    trade have never seen that number.
-3. **Everything this job posted** — every entry, with the accounts it touched. Open one:
+4. **Everything this job posted** — every entry, with the accounts it touched. Open one:
    both sides, the branch and job on each line, "In balance", and *Posted … — cannot be
    edited*, with the note that corrections are made by posting a reversing entry. There is
    no edit button to try, because there is no edit.
-4. **Financials.** Trial balance in balance, balance sheet ties, income statement, and the
+5. **Financials.** Trial balance in balance, balance sheet ties, income statement, and the
    same period segmented **by branch**. Click any account and drill into the entries behind
    it — 31 accounts drill.
-5. **Periods** at the foot of the same screen: everything up to two months ago is closed.
+6. **Periods** at the foot of the same screen: everything up to two months ago is closed.
    A posting dated inside a closed period is refused and the attempt is logged.
 
 *The line:* "The field closed the job. Nobody in the office typed anything. The books are
 done."
 
-> **Not yet built, so do not promise it:** there is no invoice detail page — Receivables is a
-> list, and the drill into the ledger runs from the job, not the invoice. There is no
-> inventory screen in the office app, so the van-stock and reorder story is data and API
-> only. Period close and reopen are engine operations with an audit trail, but there is no
-> button, so step 5 shows the state rather than performing the close.
+> **Not yet built, so do not promise it:** there is no inventory screen in the office app, so
+> the van-stock and reorder story is data and API only. Period close and reopen are engine
+> operations with an audit trail, but there is no button, so step 6 shows the state rather
+> than performing the close.
 
 ### Act 4 — "What does it tell me I don't know?" (5 min)
 The **owner dashboard** opens with four numbers and then three findings, in the order an
@@ -218,7 +224,7 @@ still ahead: accurate, and useless. **Re-run the seed on the day you present.**
 
 Run the whole thing once on the machine you will present from. The rehearsal that produced
 this version of the script found four things that only show up when you actually click:
-committing the open invoices breaks the step after it, the receivables drill has no invoice
+committing the open invoices breaks the step after it, the receivables drill had no invoice
 page behind it, reloading the technician's screen while offline used to land on the wrong
 page, and the burden figures in an earlier draft belonged to no technician in the company.
 Numbers in this script that name a technician or a flat rate are checked against the seed;

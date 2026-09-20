@@ -107,7 +107,15 @@ export default async function InvoicesPage() {
                   );
                   return (
                     <tr key={invoice.id}>
-                      <td className="font-medium">{invoice.invoiceNo}</td>
+                      <td>
+                        <Link
+                          href={`/office/invoices/${invoice.id}`}
+                          className="font-medium"
+                          style={{ color: 'var(--seq)' }}
+                        >
+                          {invoice.invoiceNo}
+                        </Link>
+                      </td>
                       <td>
                         {invoice.customer.companyName ??
                           [invoice.customer.firstName, invoice.customer.lastName]

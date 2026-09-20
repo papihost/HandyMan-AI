@@ -446,6 +446,30 @@ describe('the full path: field work to financial statements', () => {
     // Every line is tagged with the job, which is what makes costing a query.
     expect(entry.lines.every((l) => l.jobId === job.id)).toBe(true);
 
+    /*
+     * And the tax can be shown as a working, not just as a total.
+     *
+     * Sales tax is the line a customer queries and an office guesses at, so the invoice
+     * keeps the jurisdictions it was worked out from — each with the base it was applied
+     * to and the rate it was applied at. They have to add up to what was charged and to
+     * what was posted, or the breakdown on the invoice page would be a decoration over a
+     * number arrived at some other way.
+     */
+    const taxLines = await db.invoiceTaxLine.findMany({
+      where: { invoiceId: draft.id },
+      include: { taxJurisdiction: { select: { name: true, level: true } } },
+    });
+    expect(taxLines.length).toBeGreaterThan(0);
+    expect(taxLines.reduce((total, line) => total + line.taxCents, 0n)).toBe(issued.invoice.taxCents);
+    expect(taxLines.reduce((total, line) => total + line.taxCents, 0n)).toBe(
+      amount(ACCOUNTS.SALES_TAX_PAYABLE, 'creditCents'),
+    );
+    // The base is the taxable work, not the invoice total: labour here is taxable, and a
+    // jurisdiction that taxed something must say what.
+    expect(taxLines.every((line) => line.taxableCents > 0n)).toBe(true);
+    expect(taxLines.every((line) => Number(line.rate) > 0)).toBe(true);
+    expect(taxLines.every((line) => line.taxJurisdiction.name.length > 0)).toBe(true);
+
     // --- Payment ----------------------------------------------------------
     const payment = await recordPayment(db, storyCtx, {
       customerId: customer.id,

@@ -205,7 +205,13 @@ export default async function OfficeJobPage({ params }: { params: Promise<{ id: 
                 {job.invoices.map((invoice) => (
                   <tr key={invoice.id}>
                     <td>
-                      <span className="font-medium">{invoice.invoiceNo}</span>
+                      <Link
+                        href={`/office/invoices/${invoice.id}`}
+                        className="font-medium"
+                        style={{ color: 'var(--seq)' }}
+                      >
+                        {invoice.invoiceNo}
+                      </Link>
                       <span className="ml-2 text-sm" style={{ color: 'var(--ink-2)' }}>
                         {invoice.status.replace('_', ' ').toLowerCase()}
                       </span>

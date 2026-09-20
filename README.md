@@ -154,8 +154,10 @@ and row locks on the document-number sequence. A mock would prove nothing about 
   the job with access notes and prior visits, on-site quoting from the price book, parts off
   the van, before/after photos, a change order signed on the glass, and completion.
 - The office web app: an owner dashboard, a dispatch board, jobs with ledger-backed costing
-  that drills into the journal entries the job posted, a journal entry viewer, financial
-  statements with account drill-down, receivables, and a price book review. Every figure on
+  that drills into the journal entries the job posted, invoices showing what was billed,
+  the margin on it and how the sales tax was worked out, a journal entry viewer that links
+  back to the document that caused it, financial statements with account drill-down,
+  receivables, and a price book review. Every figure on
   every screen is read from posted journal lines or from the documents themselves — there is
   no summary table a report could disagree with.
 - The migration wizard: the five entities in dependency order, detection you can overrule,

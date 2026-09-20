@@ -40,6 +40,25 @@ export default async function EntryPage({ params }: { params: Promise<{ id: stri
   const debits = sum(entry.lines.map((line) => line.debitCents));
   const credits = sum(entry.lines.map((line) => line.creditCents));
 
+  /*
+   * Back to whatever caused this.
+   *
+   * A drill-down that only goes one way leaves a controller holding a number with no way
+   * to ask what it was for. Every posting names the document it came from, so the trip
+   * back is a lookup rather than a search.
+   */
+  const source =
+    entry.sourceType === 'Invoice' && entry.sourceId
+      ? await db.invoice
+          .findFirst({
+            where: { id: entry.sourceId, organizationId: ctx.organizationId },
+            select: { id: true, invoiceNo: true },
+          })
+          .then((invoice) =>
+            invoice ? { href: `/office/invoices/${invoice.id}`, label: invoice.invoiceNo } : null,
+          )
+      : null;
+
   return (
     <div className="space-y-5">
       <div>
@@ -62,6 +81,11 @@ export default async function EntryPage({ params }: { params: Promise<{ id: stri
         {entry.reverses && (
           <Link href={`/office/entries/${entry.reverses.id}`} className="text-sm font-semibold" style={{ color: 'var(--seq)' }}>
             Reverses {entry.reverses.entryNo} →
+          </Link>
+        )}
+        {source && (
+          <Link href={source.href} className="text-sm font-semibold" style={{ color: 'var(--seq)' }}>
+            {source.label} →
           </Link>
         )}
         {entry.reversedBy.map((reversal) => (
