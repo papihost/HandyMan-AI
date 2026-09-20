@@ -17,6 +17,8 @@ import {
   itemMovements,
   negativeStock,
   reorderSuggestions,
+  stockOnHand,
+  valuationAgainstLedger,
 } from '../src/lib/inventory/reports';
 import {
   createPriceBookItem,
@@ -513,6 +515,77 @@ describe('inventory reporting', () => {
     // of the two is wrong and nobody can tell which.
     expect(valuation.totalCents).toBe(glInventory);
     expect(tb.isBalanced).toBe(true);
+
+    /*
+     * And the comparison is a report rather than a thing a test knows.
+     *
+     * The inventory screen leads with it, so it has to be computed the same way the books
+     * are — and it has to be able to fail. A reconciliation that can only ever say "fine"
+     * tells a controller nothing, so the shape below is asserted as well as the verdict.
+     */
+    const reconciliation = await valuationAgainstLedger(db, valueCtx, utc(2026, 9, 30));
+    expect(reconciliation.ties).toBe(true);
+    expect(reconciliation.subledgerCents).toBe(valuation.totalCents);
+    expect(reconciliation.ledgerCents).toBe(glInventory);
+    expect(reconciliation.differenceCents).toBe(0n);
+    // It names the accounts it compared against, so the figure can be drilled rather than
+    // taken on faith.
+    expect(reconciliation.accounts.map((account) => account.code).sort()).toEqual([
+      ACCOUNTS.INVENTORY_WAREHOUSE,
+      ACCOUNTS.INVENTORY_VAN,
+    ]);
+    expect(reconciliation.accounts.every((account) => account.accountId.length > 0)).toBe(true);
+  });
+
+  it('lists what one van is carrying, dearest first, and flags what it is short of', async () => {
+    const shelfOrg = await createTestOrg('Shelf');
+    const shelfCtx = systemContext(shelfOrg.organizationId);
+    const van = await createStockLocation(shelfOrg.organizationId, {
+      kind: 'VAN',
+      locationId: shelfOrg.locationId,
+      code: 'VAN-099',
+    });
+
+    const cheap = await createPriceBookItem(shelfOrg.organizationId, {
+      name: 'Wax ring kit',
+      category: 'MATERIAL',
+      costCents: 400n,
+      priceCents: 1200n,
+    });
+    const dear = await createPriceBookItem(shelfOrg.organizationId, {
+      name: 'Circulator pump',
+      category: 'MATERIAL',
+      costCents: 18_000n,
+      priceCents: 42_000n,
+    });
+
+    await receiveStock(db, shelfCtx, {
+      stockLocationId: van,
+      lines: [
+        { priceBookItemId: cheap, quantity: '10', unitCostCents: 400n },
+        { priceBookItemId: dear, quantity: '1', unitCostCents: 18_000n },
+      ],
+      occurredAt: utc(2026, 9, 1),
+    });
+
+    // The van works to a level of its own, which is the number that decides "short".
+    await db.stockLevel.updateMany({
+      where: { stockLocationId: van, priceBookItemId: cheap },
+      data: { reorderPoint: '12' },
+    });
+
+    const rows = await stockOnHand(db, shelfCtx, van);
+
+    // Dearest first: one pump outranks ten wax rings, which is the order somebody asking
+    // about money wants and the opposite of alphabetical.
+    expect(rows.map((row) => row.name)).toEqual(['Circulator pump', 'Wax ring kit']);
+    expect(rows[0].valueCents).toBe(18_000n);
+    expect(rows[1].valueCents).toBe(4_000n);
+
+    const waxRing = rows.find((row) => row.priceBookItemId === cheap)!;
+    expect(waxRing.isLow).toBe(true);
+    expect(waxRing.reorderPoint).toBe('12');
+    expect(rows.find((row) => row.priceBookItemId === dear)!.isLow).toBe(false);
   });
 
   it('suggests restocking a van that has dropped to its reorder point', async () => {

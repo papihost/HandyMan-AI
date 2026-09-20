@@ -216,3 +216,126 @@ export async function itemMovements(
     take: 200,
   });
 }
+
+export interface ValuationAgainstLedger {
+  subledgerCents: Cents;
+  ledgerCents: Cents;
+  differenceCents: Cents;
+  ties: boolean;
+  accounts: { accountId: string; code: string; name: string; balanceCents: Cents }[];
+}
+
+/**
+ * The stock on the shelves against the stock on the balance sheet.
+ *
+ * Two systems count the same thing here: the inventory subledger, which knows what is on
+ * each van, and the general ledger, which knows what the company says its inventory is
+ * worth. In most shops those two numbers have never been compared, and the gap between
+ * them is discovered once a year by a stocktake nobody enjoys.
+ *
+ * They agree here by construction — every movement posts — so the honest thing is to show
+ * the comparison rather than assert it, and to make a disagreement loud if one ever
+ * appears. A reconciliation that can only ever say "fine" is decoration.
+ */
+export async function valuationAgainstLedger(
+  db: PrismaClient,
+  ctx: AuthContext,
+  asOf?: Date,
+): Promise<ValuationAgainstLedger> {
+  requirePermission(ctx, PERMISSIONS.FINANCE_READ_COST);
+
+  const { trialBalance } = await import('../accounting/reports');
+  const { ACCOUNTS } = await import('../accounting/chart-of-accounts');
+
+  const [valuation, tb] = await Promise.all([
+    inventoryValuation(db, ctx),
+    trialBalance(db, ctx, asOf ? { to: asOf } : {}),
+  ]);
+
+  const codes: readonly string[] = [ACCOUNTS.INVENTORY_WAREHOUSE, ACCOUNTS.INVENTORY_VAN];
+  const accounts = tb.rows
+    .filter((row) => codes.includes(row.code))
+    .map((row) => ({
+      accountId: row.accountId,
+      code: row.code,
+      name: row.name,
+      balanceCents: row.balanceCents,
+    }));
+
+  const ledgerCents = sum(accounts.map((account) => account.balanceCents));
+
+  return {
+    subledgerCents: valuation.totalCents,
+    ledgerCents,
+    differenceCents: valuation.totalCents - ledgerCents,
+    ties: valuation.totalCents === ledgerCents,
+    accounts,
+  };
+}
+
+export interface StockOnHandRow {
+  priceBookItemId: string;
+  sku: string;
+  name: string;
+  quantity: string;
+  avgCostCents: Cents;
+  valueCents: Cents;
+  reorderPoint: string | null;
+  /** At or under the point this stock location works to, so it needs restocking. */
+  isLow: boolean;
+  binLocation: string | null;
+}
+
+/**
+ * What is on one van or in one warehouse, dearest first.
+ *
+ * Sorted by value rather than by name because the question being asked is usually about
+ * money — which truck is carrying a fortune in fixtures — and a shop with eighty part
+ * numbers on a van does not want to read all of them to find out.
+ */
+export async function stockOnHand(
+  db: PrismaClient,
+  ctx: AuthContext,
+  stockLocationId: string,
+): Promise<StockOnHandRow[]> {
+  requirePermission(ctx, PERMISSIONS.INVENTORY_READ);
+
+  const levels = await db.stockLevel.findMany({
+    where: {
+      stockLocationId,
+      stockLocation: { organizationId: ctx.organizationId },
+    },
+    select: {
+      quantity: true,
+      avgCostCents: true,
+      valueCents: true,
+      reorderPoint: true,
+      binLocation: true,
+      priceBookItem: {
+        select: { id: true, sku: true, name: true, reorderPoint: true },
+      },
+    },
+  });
+
+  return levels
+    .map((level) => {
+      const onHand = toMilli(level.quantity.toString());
+      // The stock location's own point wins: a van works to a different level than the
+      // warehouse that supplies it.
+      const point = level.reorderPoint ?? level.priceBookItem.reorderPoint;
+
+      return {
+        priceBookItemId: level.priceBookItem.id,
+        sku: level.priceBookItem.sku,
+        name: level.priceBookItem.name,
+        quantity: level.quantity.toString(),
+        avgCostCents: level.avgCostCents,
+        valueCents: level.valueCents,
+        reorderPoint: point?.toString() ?? null,
+        isLow: point !== null && point !== undefined && onHand <= toMilli(point.toString()),
+        binLocation: level.binLocation,
+      };
+    })
+    .filter((row) => toMilli(row.quantity) !== 0n || row.isLow)
+    .sort((a, b) => Number(b.valueCents - a.valueCents));
+}

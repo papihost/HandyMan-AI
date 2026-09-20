@@ -9,6 +9,7 @@ const NAV = [
   { href: '/office/jobs', label: 'Jobs' },
   { href: '/office/invoices', label: 'Receivables' },
   { href: '/office/pricing', label: 'Pricing' },
+  { href: '/office/inventory', label: 'Inventory' },
   { href: '/office/financials', label: 'Financials' },
   { href: '/office/import', label: 'Migration' },
 ];

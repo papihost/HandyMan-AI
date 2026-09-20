@@ -104,7 +104,7 @@ Resetting is safe by construction: it refuses on any organization whose `dataMod
 ## Testing
 
 ```bash
-npm test          # 304 tests: unit + integration against Postgres
+npm test          # 305 tests: unit + integration against Postgres
 npm run typecheck
 ```
 
@@ -157,7 +157,9 @@ and row locks on the document-number sequence. A mock would prove nothing about 
   that drills into the journal entries the job posted, invoices showing what was billed,
   the margin on it and how the sales tax was worked out, a journal entry viewer that links
   back to the document that caused it, financial statements with account drill-down,
-  receivables, and a price book review. Every figure on
+  receivables, a price book review, and inventory — valuation against the ledger accounts
+  it must equal, what each van is carrying and short of, and every movement a part has made
+  with the job it went out on. Every figure on
   every screen is read from posted journal lines or from the documents themselves — there is
   no summary table a report could disagree with.
 - The migration wizard: the five entities in dependency order, detection you can overrule,

@@ -483,49 +483,23 @@ export async function seedDemoCompany(
   log(`Customers: ${createdCustomers.length}, properties: ${properties.length}`);
 
   // ---------------------------------------------------------------- stock
-  // Each branch receives a monthly resupply and pushes stock out to its vans, so van
-  // balances, average costs and reorder points all have real history behind them.
+  /*
+   * Stock is loaded month by month, inside the job loop below, rather than all at once up
+   * front.
+   *
+   * A fixed monthly trickle cannot work: a van gets through eleven boxes of screws a month
+   * and one GFCI receptacle, so any single number is far too little for one and far too
+   * much for the other. Sending the same handful of everything to every van produced a
+   * company where a third of all van stock lines had gone negative — parts consumed that
+   * were never received, which is not a demo of an inventory system, it is a demo of not
+   * having one.
+   *
+   * So each month every van is topped back up to a par of roughly two months of what that
+   * technician actually gets through, and the warehouse orders what the vans are about to
+   * take. It is what a well-run shop does, and it is self-correcting: a trade that starts
+   * using more of something is carrying more of it by the following month.
+   */
   const stockLines = PART_ITEMS.map((p) => ({ sku: p.sku, id: itemBySku.get(p.sku)! }));
-
-  for (let monthOffset = 0; monthOffset <= 12; monthOffset++) {
-    const monthStart = new Date(
-      Date.UTC(windowStart.getUTCFullYear(), windowStart.getUTCMonth() + monthOffset, 2, 9),
-    );
-    if (monthStart > today) break;
-
-    for (const location of LOCATIONS) {
-      const warehouse = warehouseByCode.get(location.code)!;
-      await receiveStock(db, ctx, {
-        stockLocationId: warehouse,
-        occurredAt: monthStart,
-        reference: `PO-${location.code}-${monthStart.toISOString().slice(0, 7)}`,
-        lines: stockLines.map((part) => {
-          const seed = PART_ITEMS.find((p) => p.sku === part.sku)!;
-          // Supplier prices drift; that is what makes a moving average worth having.
-          const drift = 1 + rng.float(-0.04, 0.09) + monthOffset * 0.004;
-          return {
-            priceBookItemId: part.id,
-            quantity: String(rng.int(18, 60)),
-            unitCostCents: BigInt(Math.round(Number(seed.costCents) * drift)),
-          };
-        }),
-      });
-
-      const branchTechs = techs.filter((t) => t.locationCode === location.code);
-      for (const tech of branchTechs) {
-        await transferStock(db, ctx, {
-          fromStockLocationId: warehouse,
-          toStockLocationId: tech.vanStockLocationId,
-          occurredAt: new Date(monthStart.getTime() + 3 * 3600 * 1000),
-          reference: `Van resupply ${monthStart.toISOString().slice(0, 7)}`,
-          lines: stockLines
-            .filter(() => rng.bool(0.7))
-            .map((part) => ({ priceBookItemId: part.id, quantity: String(rng.int(2, 8)) })),
-        });
-      }
-    }
-  }
-  log('Inventory: twelve months of warehouse receipts and van resupply');
 
   // ---------------------------------------------------------------- jobs
   await postJournalEntry(db, ctx, {
@@ -575,6 +549,16 @@ export async function seedDemoCompany(
   const completedJobs: { jobId: string; techId: string; date: Date; serviceCode: ServiceCode; locationCode: string }[] = [];
 
   for (const [index, month] of monthWeights.entries()) {
+    // The trucks are loaded before the month's work, from what last month actually used.
+    await resupplyVans(db, ctx, {
+      monthStart: new Date(month.start.getTime() + 9 * 3600 * 1000),
+      monthOffset: index,
+      rng,
+      warehouseByCode,
+      techs,
+      stockLines,
+    });
+
     const monthJobs = Math.round((jobTarget * month.weight) / totalWeight);
 
     const specs: OneJobInput[] = [];
@@ -1579,4 +1563,136 @@ async function scheduleCurrentWeek(
   }
 
   return { created, todayCount, inFlightCount, billableHours, completedJobs };
+}
+
+/** A van carries at least this much of anything it is sent, however rarely it is used. */
+const VAN_PAR_FLOOR = 6;
+/** Two months of what a technician actually gets through. */
+const VAN_PAR_MONTHS = 2;
+
+interface ResupplyInput {
+  monthStart: Date;
+  monthOffset: number;
+  rng: Rng;
+  warehouseByCode: Map<string, string>;
+  techs: SeededTech[];
+  stockLines: { sku: string; id: string }[];
+}
+
+/**
+ * The monthly resupply: top every van back to par, and buy what the vans are about to take.
+ *
+ * Par is measured rather than guessed — two months of what this technician has actually
+ * been getting through, read out of the consumption already posted. With no history yet it
+ * falls back to a floor, which is the first month only.
+ *
+ * Each van's reorder point is set to about a month of its own burn at the same time, so
+ * the level a truck works to is the level that truck needs. A van having a heavier month
+ * than usual drops under it and shows up as something to restock, which is the point of
+ * having the number at all.
+ */
+async function resupplyVans(
+  db: PrismaClient,
+  ctx: AuthContext,
+  input: ResupplyInput,
+): Promise<void> {
+  const since = new Date(input.monthStart.getTime() - 60 * 86_400_000);
+
+  for (const location of LOCATIONS) {
+    const warehouse = input.warehouseByCode.get(location.code)!;
+    const branchTechs = input.techs.filter((t) => t.locationCode === location.code);
+
+    const vanOrders: { vanId: string; lines: { priceBookItemId: string; quantity: string }[] }[] = [];
+    const needByItem = new Map<string, number>();
+
+    for (const tech of branchTechs) {
+      const [levels, burn] = await Promise.all([
+        db.stockLevel.findMany({
+          where: { stockLocationId: tech.vanStockLocationId },
+          select: { priceBookItemId: true, quantity: true },
+        }),
+        db.inventoryTransaction.groupBy({
+          by: ['priceBookItemId'],
+          where: {
+            organizationId: ctx.organizationId,
+            kind: 'CONSUMPTION',
+            fromStockLocationId: tech.vanStockLocationId,
+            occurredAt: { gte: since, lt: input.monthStart },
+          },
+          _sum: { quantity: true },
+        }),
+      ]);
+
+      const onHand = new Map(levels.map((l) => [l.priceBookItemId, Number(l.quantity)]));
+      const perMonth = new Map(
+        burn.map((row) => [row.priceBookItemId, Number(row._sum.quantity ?? 0) / 2]),
+      );
+
+      const lines: { priceBookItemId: string; quantity: string }[] = [];
+      for (const part of input.stockLines) {
+        const monthly = perMonth.get(part.id) ?? 0;
+        const par = Math.max(VAN_PAR_FLOOR, Math.ceil(monthly * VAN_PAR_MONTHS));
+        const need = par - (onHand.get(part.id) ?? 0);
+
+        // The level this truck works to, which is its own and not the warehouse's.
+        const point = Math.max(3, Math.ceil(monthly));
+        await db.stockLevel.updateMany({
+          where: { stockLocationId: tech.vanStockLocationId, priceBookItemId: part.id },
+          data: { reorderPoint: String(point), reorderQty: String(par - point) },
+        });
+
+        if (need <= 0) continue;
+        lines.push({ priceBookItemId: part.id, quantity: String(need) });
+        needByItem.set(part.id, (needByItem.get(part.id) ?? 0) + need);
+      }
+
+      if (lines.length > 0) vanOrders.push({ vanId: tech.vanStockLocationId, lines });
+    }
+
+    // What the warehouse has to buy: what the vans are about to take, less what is already
+    // on the shelf, plus a little to sit on.
+    const shelfLevels = await db.stockLevel.findMany({
+      where: { stockLocationId: warehouse },
+      select: { priceBookItemId: true, quantity: true },
+    });
+    const shelf = new Map(shelfLevels.map((l) => [l.priceBookItemId, Number(l.quantity)]));
+
+    const receiptLines = input.stockLines
+      .map((part) => {
+        const order =
+          (needByItem.get(part.id) ?? 0) + input.rng.int(8, 20) - (shelf.get(part.id) ?? 0);
+        return { part, order: Math.ceil(order) };
+      })
+      .filter((row) => row.order > 0)
+      .map((row) => {
+        const seed = PART_ITEMS.find((p) => p.sku === row.part.sku)!;
+        // Supplier prices drift; that is what makes a moving average worth having.
+        const drift = 1 + input.rng.float(-0.04, 0.09) + input.monthOffset * 0.004;
+        return {
+          priceBookItemId: row.part.id,
+          quantity: String(row.order),
+          unitCostCents: BigInt(Math.round(Number(seed.costCents) * drift)),
+        };
+      });
+
+    const stamp = input.monthStart.toISOString().slice(0, 7);
+    if (receiptLines.length > 0) {
+      await receiveStock(db, ctx, {
+        stockLocationId: warehouse,
+        occurredAt: input.monthStart,
+        reference: `PO-${location.code}-${stamp}`,
+        lines: receiptLines,
+      });
+    }
+
+    for (const order of vanOrders) {
+      await transferStock(db, ctx, {
+        fromStockLocationId: warehouse,
+        toStockLocationId: order.vanId,
+        occurredAt: new Date(input.monthStart.getTime() + 3 * 3600 * 1000),
+        reference: `Van resupply ${stamp}`,
+        lines: order.lines,
+      });
+    }
+  }
 }

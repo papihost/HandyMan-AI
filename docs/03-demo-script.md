@@ -115,16 +115,26 @@ Switch to **Diane Kowalczyk, controller**.
 5. **Financials.** Trial balance in balance, balance sheet ties, income statement, and the
    same period segmented **by branch**. Click any account and drill into the entries behind
    it — 31 accounts drill.
-6. **Periods** at the foot of the same screen: everything up to two months ago is closed.
-   A posting dated inside a closed period is refused and the attempt is logged.
+6. **Inventory.** The line at the top is the one worth the screen: what the vans and the
+   warehouse are carrying, against what the balance sheet says inventory is worth — the
+   same number, because every part that moves posts as it moves. Most shops have never
+   compared those two figures and find the gap once a year with a stocktake.
+
+   Then open a van. It is a stock location of its own, working to its own levels, and it
+   shows what that truck is short of. Open a part and you get every movement it has ever
+   made, each one linking to the job it went out on. The negative lines are worth naming
+   out loud: parts consumed that were never booked in, which is a receipt somebody did not
+   enter and a material cost that was estimated rather than known.
+7. **Periods** at the foot of the Financials screen: everything up to two months ago is
+   closed. A posting dated inside a closed period is refused and the attempt is logged.
 
 *The line:* "The field closed the job. Nobody in the office typed anything. The books are
 done."
 
-> **Not yet built, so do not promise it:** there is no inventory screen in the office app, so
-> the van-stock and reorder story is data and API only. Period close and reopen are engine
-> operations with an audit trail, but there is no button, so step 6 shows the state rather
-> than performing the close.
+> **Not yet built, so do not promise it:** period close and reopen are engine operations
+> with an audit trail, but there is no button, so step 7 shows the state rather than
+> performing the close. Purchase orders exist in the data model and the payables engine;
+> the reorder list says what to buy but does not yet raise the PO.
 
 ### Act 4 — "What does it tell me I don't know?" (5 min)
 The **owner dashboard** opens with four numbers and then three findings, in the order an
@@ -203,7 +213,11 @@ the product's value is that it surfaces them:
 - **Warranty callbacks exist**, costed but never billed, assigned back to the technician who
   did the original job so they land on that technician's scorecard. Rates run from under 1%
   to nearly 11%, and the worst of them belongs to one of the highest earners on the board.
-- **Van stock has drifted** on some trucks and dropped below reorder point on others.
+- **Van stock is loaded monthly and runs down through the month**, each truck topped back
+  to about two months of what that technician actually gets through, so by the third week
+  a good share of the trucks need loading again. A handful of lines have gone negative —
+  parts used that were never booked in — which is the most common real inventory fault
+  there is and the thing the negative-stock report exists to surface.
 - **Older periods are closed.** Try to post into one and the system refuses, which is the
   point of Act 3 step 6.
 
