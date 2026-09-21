@@ -11,6 +11,7 @@ const NAV = [
   { href: '/office/invoices', label: 'Receivables' },
   { href: '/office/pricing', label: 'Pricing' },
   { href: '/office/inventory', label: 'Inventory' },
+  { href: '/office/purchase-orders', label: 'Ordering' },
   { href: '/office/financials', label: 'Financials' },
   { href: '/office/periods', label: 'Close' },
   { href: '/office/import', label: 'Migration' },

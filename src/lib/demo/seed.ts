@@ -329,14 +329,30 @@ export async function seedDemoCompany(
 
   // ---------------------------------------------------------------- vendors
   const vendorIds: { supply: string[]; sub: string[] } = { supply: [], sub: [] };
-  const vendorSeeds: { name: string; kind: 'supply' | 'sub'; terms: number; is1099: boolean }[] = [
-    { name: 'Copper State Supply', kind: 'supply', terms: 30, is1099: false },
-    { name: 'Desert Builders Wholesale', kind: 'supply', terms: 30, is1099: false },
-    { name: 'Valley Hardware & Fasteners', kind: 'supply', terms: 15, is1099: false },
-    { name: 'Sunbelt Electrical Supply', kind: 'supply', terms: 30, is1099: false },
+  /*
+   * Who each trade's parts come from.
+   *
+   * A restock list nobody can act on is just a list: to raise a purchase order you have to
+   * know who sells the thing. Real shops buy plumbing from the plumbing house and fasteners
+   * from the hardware place, so the trade on each part decides its supplier.
+   */
+  const vendorSeeds: {
+    name: string;
+    kind: 'supply' | 'sub';
+    terms: number;
+    is1099: boolean;
+    supplies?: ServiceCode[];
+  }[] = [
+    { name: 'Copper State Supply', kind: 'supply', terms: 30, is1099: false, supplies: ['PLM', 'APL'] },
+    { name: 'Desert Builders Wholesale', kind: 'supply', terms: 30, is1099: false, supplies: ['DRY', 'CRP'] },
+    { name: 'Valley Hardware & Fasteners', kind: 'supply', terms: 15, is1099: false, supplies: ['GEN', 'DRS'] },
+    { name: 'Sunbelt Electrical Supply', kind: 'supply', terms: 30, is1099: false, supplies: ['ELE'] },
     { name: 'Rivera Tile & Stone (sub)', kind: 'sub', terms: 15, is1099: true },
     { name: 'Ahmadi Glazing (sub)', kind: 'sub', terms: 15, is1099: true },
   ];
+
+  /** Trade → the supply house that sells its parts. */
+  const vendorByTrade = new Map<ServiceCode, string>();
 
   for (const [index, seed] of vendorSeeds.entries()) {
     const vendor = await db.vendor.create({
@@ -353,6 +369,17 @@ export async function seedDemoCompany(
       },
     });
     vendorIds[seed.kind].push(vendor.id);
+    for (const trade of seed.supplies ?? []) vendorByTrade.set(trade, vendor.id);
+  }
+
+  // Every stocked part gets a supplier, so the reorder list can be turned into orders.
+  for (const part of PART_ITEMS) {
+    const vendorId = part.serviceCode ? vendorByTrade.get(part.serviceCode) : undefined;
+    if (!vendorId) continue;
+    await db.priceBookItem.updateMany({
+      where: { organizationId: org.id, sku: part.sku },
+      data: { preferredVendorId: vendorId },
+    });
   }
 
   // ---------------------------------------------------------------- warehouses

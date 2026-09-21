@@ -135,6 +135,20 @@ Switch to **Diane Kowalczyk, controller**.
    made, each one linking to the job it went out on. The negative lines are worth naming
    out loud: parts consumed that were never booked in, which is a receipt somebody did not
    enter and a material cost that was estimated rather than known.
+
+   The restock list has a button on it. **Raise the orders** turns what the vans and
+   warehouses are short of into purchase orders — one per supplier per shelf, never one
+   big order, because a supply house delivers to a place and a van gets loaded from one.
+   Anything the price book has no supplier for is reported and left out rather than sent
+   to whoever was nearest. **Ordering** shows them, already sent, with what is on order.
+   Nothing has posted: ordering is a commitment, not a cost, and the trial balance has not
+   moved.
+
+   Then receive one, with the supplier's invoice number off the paperwork in your hand. In
+   one posting the stock goes up at what was actually paid for it and payables goes up by
+   the same amount, and the vendor bill hangs off that same entry — so the document and
+   the ledger cannot end up describing different amounts. A short delivery is the normal
+   case and is handled as one: receive five of twelve and the order stays open for seven.
 7. **Close.** The oldest month still open is waiting with what is in it — around 1,900
    entries — and nothing outstanding, so close it. Now look at the month behind it: it will
    not close clean, because finished jobs in it were never invoiced, which is the same
@@ -149,9 +163,6 @@ Switch to **Diane Kowalczyk, controller**.
 
 *The line:* "The field closed the job. Nobody in the office typed anything. The books are
 done."
-
-> **Not yet built, so do not promise it:** purchase orders exist in the data model and the
-> payables engine, but the reorder list says what to buy without raising the PO.
 
 ### Act 4 — "What does it tell me I don't know?" (5 min)
 The **owner dashboard** opens with four numbers and then three findings, in the order an

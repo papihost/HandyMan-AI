@@ -104,7 +104,7 @@ Resetting is safe by construction: it refuses on any organization whose `dataMod
 ## Testing
 
 ```bash
-npm test          # 307 tests: unit + integration against Postgres
+npm test          # 317 tests: unit + integration against Postgres
 npm run typecheck
 ```
 
@@ -135,9 +135,11 @@ and row locks on the document-number sequence. A mock would prove nothing about 
   locks, transfers, consumption to COGS on a job, cycle counts with shrinkage, reorder
   suggestions, and a valuation that is asserted equal to the inventory accounts in the
   general ledger.
-- Purchasing and payables: a technician's supply-house receipt becomes a vendor bill coded
-  straight to the job, subcontracted work posts to its own account, and bills are paid in
-  runs.
+- Purchasing and payables: the restock list becomes purchase orders — one per supplier per
+  shelf — and receiving one puts the stock on the shelf and the money in payables in a
+  single posting the vendor bill hangs off, with short deliveries treated as the normal
+  case. A technician's supply-house receipt becomes a vendor bill coded straight to the
+  job, subcontracted work posts to its own account, and bills are paid in runs.
 - The Apex Handyman demo company: three branches, fourteen technicians, ~4,500 jobs across
   twelve months, ~18,000 journal entries — all produced by the posting engine above.
 - The import wizard: delimiter and header detection, per-column date-order and
@@ -170,6 +172,8 @@ and row locks on the document-number sequence. A mock would prove nothing about 
   - **Price book review** — every flat rate against the cost it carries, thinnest first.
   - **Inventory** — valuation against the ledger accounts it must equal, what each van is
     carrying and short of, and every movement a part has made with the job it went out on.
+  - **Ordering** — what the restock list would buy, raised as orders and received against
+    the supplier's invoice; ordering posts nothing, receiving posts both sides at once.
   - **Close** — what is in the month, what is worth finishing first, the close itself, a
     reopening that insists on a reason, and every posting the lock has turned away.
 - The migration wizard: the five entities in dependency order, detection you can overrule,

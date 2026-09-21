@@ -3,9 +3,23 @@ import { db } from '../src/lib/db';
 import { systemContext, type AuthContext } from '../src/lib/auth/context';
 import { ACCOUNTS } from '../src/lib/accounting/chart-of-accounts';
 import { trialBalance } from '../src/lib/accounting/reports';
+import { closePeriod, findPeriodFor } from '../src/lib/accounting/periods';
 import { jobCosting } from '../src/lib/jobs/costing';
 import { payOpenBills, recordJobPurchase } from '../src/lib/purchasing/service';
-import { createTestJob, createTestOrg, utc, type TestOrg } from './factory';
+import {
+  createPurchaseOrder,
+  draftOrdersFromReorder,
+  receivePurchaseOrder,
+  submitPurchaseOrder,
+} from '../src/lib/purchasing/orders';
+import {
+  createPriceBookItem,
+  createStockLocation,
+  createTestJob,
+  createTestOrg,
+  utc,
+  type TestOrg,
+} from './factory';
 
 let org: TestOrg;
 let ctx: AuthContext;
@@ -197,5 +211,328 @@ describe('paying bills', () => {
     });
     expect(run.paidCount).toBe(0);
     expect(run.journalEntryId).toBeNull();
+  });
+});
+
+describe('purchase orders', () => {
+  let poOrg: TestOrg;
+  let poCtx: AuthContext;
+  let vendorId: string;
+  let otherVendorId: string;
+  let warehouse: string;
+  let valve: string;
+  let breaker: string;
+
+  beforeAll(async () => {
+    poOrg = await createTestOrg('Ordering');
+    poCtx = systemContext(poOrg.organizationId);
+
+    [vendorId, otherVendorId] = await Promise.all(
+      [
+        { vendorNo: 'V-0001', name: 'Copper State Supply', paymentTermsDays: 30 },
+        { vendorNo: 'V-0002', name: 'Desert Electric Wholesale', paymentTermsDays: 15 },
+      ].map(async (data) =>
+        (await db.vendor.create({ data: { organizationId: poOrg.organizationId, ...data } })).id,
+      ),
+    );
+
+    warehouse = await createStockLocation(poOrg.organizationId, {
+      kind: 'WAREHOUSE',
+      code: 'WH-PO',
+      locationId: poOrg.locationId,
+    });
+
+    valve = await createPriceBookItem(poOrg.organizationId, {
+      sku: 'PL-VALVE',
+      name: 'Ball valve 3/4"',
+      category: 'MATERIAL',
+      costCents: 800n,
+      priceCents: 2400n,
+    });
+    breaker = await createPriceBookItem(poOrg.organizationId, {
+      sku: 'EL-BRK20',
+      name: '20A breaker',
+      category: 'MATERIAL',
+      costCents: 1_250n,
+      priceCents: 3_900n,
+    });
+  });
+
+  it('prices its lines from the price book and orders nothing until submitted', async () => {
+    const order = await createPurchaseOrder(db, poCtx, {
+      vendorId,
+      receiveToStockLocationId: warehouse,
+      lines: [
+        { priceBookItemId: valve, quantity: '10' },
+        { priceBookItemId: breaker, quantity: '4', unitCostCents: 1_100n },
+      ],
+      createdAt: utc(2026, 6, 1),
+    });
+
+    expect(order.poNo).toMatch(/^PO-\d{5}$/);
+    expect(order.status).toBe('DRAFT');
+    // 10 × $8.00, plus 4 × the $11.00 actually quoted rather than the book's $12.50.
+    expect(order.totalCents).toBe(8_000n + 4_400n);
+
+    const tb = await trialBalance(db, poCtx, { to: utc(2026, 6, 30) });
+    // Ordering something is a commitment, not a cost. Nothing has posted.
+    expect(tb.rows.length).toBe(0);
+
+    const submitted = await submitPurchaseOrder(db, poCtx, order.id, { at: utc(2026, 6, 1) });
+    expect(submitted.status).toBe('SUBMITTED');
+    await expect(submitPurchaseOrder(db, poCtx, order.id)).rejects.toThrow(/already SUBMITTED/);
+  });
+
+  it('refuses to order an item the price book has no cost for', async () => {
+    const freebie = await createPriceBookItem(poOrg.organizationId, {
+      name: 'Uncosted gasket',
+      category: 'MATERIAL',
+      costCents: 0n,
+      priceCents: 500n,
+    });
+
+    await expect(
+      createPurchaseOrder(db, poCtx, {
+        vendorId,
+        receiveToStockLocationId: warehouse,
+        lines: [{ priceBookItemId: freebie, quantity: '5' }],
+      }),
+    ).rejects.toThrow(/no cost on the price book/);
+
+    await expect(
+      createPurchaseOrder(db, poCtx, { vendorId, receiveToStockLocationId: warehouse, lines: [] }),
+    ).rejects.toThrow(/needs a line/);
+  });
+
+  it('receiving puts the stock on the shelf and the money in payables, once', async () => {
+    const order = await createPurchaseOrder(db, poCtx, {
+      vendorId,
+      receiveToStockLocationId: warehouse,
+      lines: [{ priceBookItemId: valve, quantity: '20', unitCostCents: 900n }],
+      createdAt: utc(2026, 7, 1),
+    });
+    await submitPurchaseOrder(db, poCtx, order.id, { at: utc(2026, 7, 1) });
+
+    const receipt = await receivePurchaseOrder(db, poCtx, order.id, {
+      vendorInvoiceNo: 'CS-99120',
+      receivedAt: utc(2026, 7, 3),
+    });
+
+    expect(receipt.order.status).toBe('RECEIVED');
+    expect(receipt.totalCostCents).toBe(18_000n);
+
+    const level = await db.stockLevel.findFirstOrThrow({
+      where: { stockLocationId: warehouse, priceBookItemId: valve },
+    });
+    expect(Number(level.quantity)).toBe(20);
+
+    const bill = await db.vendorBill.findUniqueOrThrow({ where: { id: receipt.billId } });
+    expect(bill.vendorInvoiceNo).toBe('CS-99120');
+    expect(bill.totalCents).toBe(18_000n);
+    // The bill hangs off the posting the receipt made — one entry, not two, so the
+    // document and the ledger can never disagree about the amount.
+    expect(bill.journalEntryId).toBe(receipt.journalEntryId);
+    expect(bill.dueDate?.toISOString().slice(0, 10)).toBe('2026-08-02');
+
+    const tb = await trialBalance(db, poCtx, { to: utc(2026, 7, 31) });
+    expect(tb.rows.find((r) => r.code === ACCOUNTS.INVENTORY_WAREHOUSE)!.balanceCents).toBe(
+      18_000n,
+    );
+    expect(tb.rows.find((r) => r.code === ACCOUNTS.AP)!.balanceCents).toBe(18_000n);
+    expect(tb.isBalanced).toBe(true);
+
+    await expect(receivePurchaseOrder(db, poCtx, order.id)).rejects.toThrow(
+      /already been received/,
+    );
+  });
+
+  it('takes a short delivery and leaves the rest outstanding', async () => {
+    const order = await createPurchaseOrder(db, poCtx, {
+      vendorId: otherVendorId,
+      receiveToStockLocationId: warehouse,
+      lines: [{ priceBookItemId: breaker, quantity: '12', unitCostCents: 1_000n }],
+      createdAt: utc(2026, 8, 1),
+    });
+    await submitPurchaseOrder(db, poCtx, order.id, { at: utc(2026, 8, 1) });
+    const lineId = order.lines[0].id;
+
+    await expect(
+      receivePurchaseOrder(db, poCtx, order.id, {
+        lines: [{ purchaseOrderLineId: lineId, quantity: '15' }],
+      }),
+    ).rejects.toThrow(/more than the 12 still outstanding/);
+
+    const first = await receivePurchaseOrder(db, poCtx, order.id, {
+      lines: [{ purchaseOrderLineId: lineId, quantity: '5' }],
+      receivedAt: utc(2026, 8, 4),
+    });
+    expect(first.order.status).toBe('PARTIALLY_RECEIVED');
+    expect(first.order.receivedAt).toBeNull();
+    expect(first.totalCostCents).toBe(5_000n);
+
+    // The rest arrives a week later: omitting lines takes whatever is still outstanding.
+    const second = await receivePurchaseOrder(db, poCtx, order.id, {
+      receivedAt: utc(2026, 8, 11),
+    });
+    expect(second.order.status).toBe('RECEIVED');
+    expect(second.totalCostCents).toBe(7_000n);
+
+    // Two deliveries, two bills — the vendor invoices what it actually sent.
+    const bills = await db.vendorBill.findMany({ where: { purchaseOrderId: order.id } });
+    expect(bills.length).toBe(2);
+  });
+
+  it('gives the claim back when the posting is refused', async () => {
+    const lockedOrg = await createTestOrg('OrderingLocked');
+    const lockedCtx = systemContext(lockedOrg.organizationId);
+
+    const supplier = (
+      await db.vendor.create({
+        data: {
+          organizationId: lockedOrg.organizationId,
+          vendorNo: 'V-0001',
+          name: 'Copper State Supply',
+          paymentTermsDays: 30,
+        },
+      })
+    ).id;
+    const shelf = await createStockLocation(lockedOrg.organizationId, {
+      kind: 'WAREHOUSE',
+      code: 'WH-LOCK',
+      locationId: lockedOrg.locationId,
+    });
+    const part = await createPriceBookItem(lockedOrg.organizationId, {
+      name: 'Angle stop',
+      category: 'MATERIAL',
+      costCents: 1_150n,
+      priceCents: 3_800n,
+    });
+
+    const order = await createPurchaseOrder(db, lockedCtx, {
+      vendorId: supplier,
+      receiveToStockLocationId: shelf,
+      lines: [{ priceBookItemId: part, quantity: '8' }],
+      createdAt: utc(2025, 1, 5),
+    });
+    await submitPurchaseOrder(db, lockedCtx, order.id, { at: utc(2025, 1, 5) });
+
+    // January is the first period of the fiscal year, so nothing precedes it.
+    const january = await findPeriodFor(db, lockedOrg.organizationId, utc(2025, 1, 15));
+    await closePeriod(db, lockedCtx, january!.id);
+
+    await expect(
+      receivePurchaseOrder(db, lockedCtx, order.id, { receivedAt: utc(2025, 1, 20) }),
+    ).rejects.toThrow(/period is CLOSED/);
+
+    // The order is exactly as it was: nothing received, nothing owed, nothing on the shelf.
+    const after = await db.purchaseOrder.findUniqueOrThrow({
+      where: { id: order.id },
+      include: { lines: true, bills: true },
+    });
+    expect(after.status).toBe('SUBMITTED');
+    expect(after.receivedAt).toBeNull();
+    expect(Number(after.lines[0].receivedQty)).toBe(0);
+    expect(after.bills.length).toBe(0);
+
+    const level = await db.stockLevel.findFirst({
+      where: { stockLocationId: shelf, priceBookItemId: part },
+    });
+    expect(level === null || Number(level.quantity) === 0).toBe(true);
+
+    // And it still receives once the month it belongs to is open.
+    const received = await receivePurchaseOrder(db, lockedCtx, order.id, {
+      receivedAt: utc(2025, 2, 3),
+    });
+    expect(received.order.status).toBe('RECEIVED');
+    expect(received.totalCostCents).toBe(9_200n);
+  });
+
+  it('drafts one order per vendor per stock location, and leaves orphans out', async () => {
+    const draftOrg = await createTestOrg('Reordering');
+    const draftCtx = systemContext(draftOrg.organizationId);
+
+    const plumbing = (
+      await db.vendor.create({
+        data: {
+          organizationId: draftOrg.organizationId,
+          vendorNo: 'V-0001',
+          name: 'Copper State Supply',
+          paymentTermsDays: 30,
+        },
+      })
+    ).id;
+    const electrical = (
+      await db.vendor.create({
+        data: {
+          organizationId: draftOrg.organizationId,
+          vendorNo: 'V-0002',
+          name: 'Desert Electric Wholesale',
+          paymentTermsDays: 15,
+        },
+      })
+    ).id;
+
+    const shop = await createStockLocation(draftOrg.organizationId, {
+      kind: 'WAREHOUSE',
+      code: 'WH-1',
+      locationId: draftOrg.locationId,
+    });
+    const van = await createStockLocation(draftOrg.organizationId, {
+      kind: 'VAN',
+      code: 'VAN-1',
+      locationId: draftOrg.locationId,
+    });
+
+    const stocked = async (name: string, preferredVendorId: string | null) => {
+      const id = await createPriceBookItem(draftOrg.organizationId, {
+        name,
+        category: 'MATERIAL',
+        costCents: 900n,
+        priceCents: 2_700n,
+      });
+      await db.priceBookItem.update({
+        where: { id },
+        data: { preferredVendorId, reorderPoint: '10', reorderQty: '24' },
+      });
+      return id;
+    };
+
+    const pipe = await stocked('Copper pipe 3/4"', plumbing);
+    const wire = await stocked('12/2 romex', electrical);
+    const orphan = await stocked('Shop-made bracket', null);
+
+    for (const stockLocationId of [shop, van]) {
+      for (const priceBookItemId of [pipe, wire, orphan]) {
+        await db.stockLevel.create({
+          data: {
+            stockLocationId,
+            priceBookItemId,
+            quantity: '2',
+            valueCents: 1_800n,
+            avgCostCents: 900n,
+          },
+        });
+      }
+    }
+
+    const { drafts, unassigned } = await draftOrdersFromReorder(db, draftCtx);
+
+    // Two vendors × two places to receive into: four orders, never one big one.
+    expect(drafts.length).toBe(4);
+    for (const draft of drafts) {
+      expect(draft.lines.length).toBe(1);
+      expect(draft.lines[0].quantity).toBe('24');
+    }
+    expect(new Set(drafts.map((d) => d.stockLocationCode))).toEqual(new Set(['WH-1', 'VAN-1']));
+    expect(new Set(drafts.map((d) => d.vendorName))).toEqual(
+      new Set(['Copper State Supply', 'Desert Electric Wholesale']),
+    );
+
+    // A part with nobody to buy it from is reported, not guessed at.
+    expect(unassigned.map((u) => u.name)).toEqual(['Shop-made bracket', 'Shop-made bracket']);
+
+    // Filtering to one shelf drafts only that shelf's orders.
+    const vanOnly = await draftOrdersFromReorder(db, draftCtx, { stockLocationId: van });
+    expect(vanOnly.drafts.length).toBe(2);
   });
 });

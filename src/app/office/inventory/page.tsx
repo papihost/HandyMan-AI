@@ -10,6 +10,7 @@ import {
   valuationAgainstLedger,
 } from '../../../lib/inventory/reports';
 import { Bar, Flag, Money, Panel, StatTile } from '../../../components/office/primitives';
+import { RaiseOrdersButton } from '../../../components/office/purchase-actions';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,6 +26,7 @@ export const dynamic = 'force-dynamic';
 export default async function InventoryPage() {
   const ctx = await requireContext();
   const canSeeCost = ctx.permissions.has(PERMISSIONS.FINANCE_READ_COST);
+  const canOrder = ctx.permissions.has(PERMISSIONS.PO_WRITE);
 
   const [valuation, reconciliation, reorders, negatives] = await Promise.all([
     canSeeCost ? inventoryValuation(db, ctx) : Promise.resolve(null),
@@ -143,6 +145,7 @@ export default async function InventoryPage() {
         <Panel
           title="Needs restocking"
           subtitle={`${reorders.length} lines at or under the level their stock location works to — a van carries a different working stock than the warehouse, and a busy month empties one faster`}
+          action={canOrder ? <RaiseOrdersButton shortCount={reorders.length} /> : undefined}
         >
           <div className="overflow-x-auto">
             <table>
