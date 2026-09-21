@@ -49,6 +49,12 @@ export interface CreateQuoteInput {
   /** Either a set of options, or a single flat list of lines. */
   options?: QuoteOptionInput[];
   lines?: QuoteLineInput[];
+  /**
+   * When the quote was raised. Defaults to now, which is right for somebody typing one.
+   * An import or a backdated seed knows better, and a pipeline whose every quote was
+   * raised at the same instant cannot tell anybody what has been sitting unanswered.
+   */
+  createdAt?: Date;
 }
 
 export async function createQuote(db: PrismaClient, ctx: AuthContext, input: CreateQuoteInput) {
@@ -74,7 +80,7 @@ export async function createQuote(db: PrismaClient, ctx: AuthContext, input: Cre
     });
     if (!property) throw new ValidationError('That property does not belong to this customer');
 
-    const now = new Date();
+    const now = input.createdAt ?? new Date();
     const taxRule = await resolveTaxRuleForProperty(tx, ctx.organizationId, input.propertyId, now);
 
     // Resolve every option's pricing before writing, so a bad line fails the whole quote
@@ -124,6 +130,7 @@ export async function createQuote(db: PrismaClient, ctx: AuthContext, input: Cre
         estimatedCostCents: headline.totals.costCents,
         depositRequiredCents: input.depositRequiredCents ?? ZERO,
         validUntil: new Date(now.getTime() + (input.validForDays ?? 30) * 86_400_000),
+        ...(input.createdAt ? { createdAt: input.createdAt } : {}),
       },
     });
 
@@ -215,7 +222,12 @@ async function resolveLines(
   return resolved;
 }
 
-export async function sendQuote(db: PrismaClient, ctx: AuthContext, quoteId: string) {
+export async function sendQuote(
+  db: PrismaClient,
+  ctx: AuthContext,
+  quoteId: string,
+  options: { at?: Date } = {},
+) {
   requirePermission(ctx, PERMISSIONS.QUOTE_WRITE);
 
   const quote = await db.quote.findFirst({
@@ -231,7 +243,7 @@ export async function sendQuote(db: PrismaClient, ctx: AuthContext, quoteId: str
 
   return db.quote.update({
     where: { id: quoteId },
-    data: { status: 'SENT', sentAt: new Date() },
+    data: { status: 'SENT', sentAt: options.at ?? new Date() },
   });
 }
 
@@ -242,6 +254,14 @@ export interface ApproveQuoteInput {
   signatureStorageKey: string;
   ipAddress?: string;
   deviceInfo?: string;
+  /**
+   * When the customer signed. Defaults to now.
+   *
+   * Expiry is judged against this rather than against today, because a quote accepted in
+   * March was not expired in March — and a backdated import or seed that compared it to
+   * the present would refuse every acceptance older than the validity window.
+   */
+  approvedAt?: Date;
 }
 
 /**
@@ -273,7 +293,8 @@ export async function approveQuote(
     if (quote.status === 'DECLINED' || quote.status === 'EXPIRED') {
       throw new ValidationError(`Quote ${quote.quoteNo} is ${quote.status}`);
     }
-    if (quote.validUntil && quote.validUntil < new Date()) {
+    const decidedAt = input.approvedAt ?? new Date();
+    if (quote.validUntil && quote.validUntil < decidedAt) {
       throw new ValidationError(
         `Quote ${quote.quoteNo} expired on ${quote.validUntil.toISOString().slice(0, 10)}`,
       );
@@ -290,6 +311,7 @@ export async function approveQuote(
         signerName: input.signerName,
         signerRole: input.signerRole ?? null,
         storageKey: input.signatureStorageKey,
+        signedAt: decidedAt,
         ipAddress: input.ipAddress ?? null,
         deviceInfo: input.deviceInfo ?? null,
       },
@@ -311,7 +333,7 @@ export async function approveQuote(
       where: { id: quoteId },
       data: {
         status: 'APPROVED',
-        approvedAt: new Date(),
+        approvedAt: decidedAt,
         signatureId: signature.id,
         subtotalCents: selected.subtotalCents,
         discountCents,
@@ -329,6 +351,7 @@ export async function declineQuote(
   ctx: AuthContext,
   quoteId: string,
   reason: string,
+  options: { at?: Date } = {},
 ) {
   requirePermission(ctx, PERMISSIONS.QUOTE_WRITE);
 
@@ -341,7 +364,7 @@ export async function declineQuote(
 
   return db.quote.update({
     where: { id: quoteId },
-    data: { status: 'DECLINED', declinedAt: new Date(), declineReason: reason },
+    data: { status: 'DECLINED', declinedAt: options.at ?? new Date(), declineReason: reason },
   });
 }
 
@@ -427,4 +450,66 @@ export async function convertQuoteToJob(
       include: { lines: { orderBy: { sortOrder: 'asc' } } },
     });
   });
+}
+
+export interface QuotePipeline {
+  openCount: number;
+  openCents: Cents;
+  /** Of the quotes decided in the window, the share that were accepted. */
+  closeRatePercent: number;
+  decidedCount: number;
+  wonCount: number;
+  wonCents: Cents;
+  averageQuoteCents: Cents;
+  /** Presented on site by a technician rather than raised in the office. */
+  fromTheFieldCount: number;
+}
+
+/**
+ * The pipeline.
+ *
+ * Close rate is measured against quotes that were actually decided — accepted or declined
+ * — rather than against everything ever sent. Counting the undecided as losses makes the
+ * number sink a little every week whatever anybody does, which is how a metric stops being
+ * watched.
+ */
+export async function quotePipeline(
+  db: PrismaClient,
+  ctx: AuthContext,
+  period: { from: Date; to: Date },
+): Promise<QuotePipeline> {
+  requirePermission(ctx, PERMISSIONS.QUOTE_READ);
+
+  const quotes = await db.quote.findMany({
+    where: {
+      organizationId: ctx.organizationId,
+      createdAt: { gte: period.from, lte: period.to },
+      ...(ctx.scope !== 'ALL' && ctx.locationIds.length
+        ? { locationId: { in: ctx.locationIds } }
+        : {}),
+    },
+    select: {
+      status: true,
+      totalCents: true,
+      presentedByTechnicianId: true,
+    },
+  });
+
+  const open = quotes.filter((q) => q.status === 'DRAFT' || q.status === 'SENT');
+  const won = quotes.filter((q) => q.status === 'APPROVED' || q.status === 'CONVERTED');
+  const lost = quotes.filter((q) => q.status === 'DECLINED' || q.status === 'EXPIRED');
+  const decided = won.length + lost.length;
+
+  const total = quotes.reduce((sum, q) => sum + q.totalCents, ZERO);
+
+  return {
+    openCount: open.length,
+    openCents: open.reduce((sum, q) => sum + q.totalCents, ZERO),
+    closeRatePercent: decided === 0 ? 0 : Math.round((won.length / decided) * 1000) / 10,
+    decidedCount: decided,
+    wonCount: won.length,
+    wonCents: won.reduce((sum, q) => sum + q.totalCents, ZERO),
+    averageQuoteCents: quotes.length === 0 ? ZERO : total / BigInt(quotes.length),
+    fromTheFieldCount: quotes.filter((q) => q.presentedByTechnicianId !== null).length,
+  };
 }

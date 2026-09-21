@@ -19,7 +19,7 @@ import { PriceBookPicker, type PickedLine } from '../../../../components/PriceBo
 import { Sheet } from '../../../../components/Sheet';
 import { SignaturePad } from '../../../../components/SignaturePad';
 
-type SheetName = 'work' | 'parts' | 'changeOrder' | 'complete' | null;
+type SheetName = 'work' | 'parts' | 'changeOrder' | 'quote' | 'complete' | null;
 
 /** Best-effort position. A technician in a plant room has no GPS and must not be blocked. */
 function currentPosition(): Promise<GeolocationCoordinates | undefined> {
@@ -118,6 +118,8 @@ export default function JobPage() {
 
       <PartsCard stock={stock} readOnly={done} onUse={() => setSheet('parts')} />
 
+      <QuoteCard onQuote={() => setSheet('quote')} />
+
       <PhotoCard
         photos={photos}
         serverCount={job.photoCount}
@@ -162,6 +164,31 @@ export default function JobPage() {
         onClose={() => setSheet(null)}
         onConfirm={async (lines) => {
           await actions.consumeParts(job.id, lines);
+          setSheet(null);
+          await reload();
+        }}
+      />
+
+      <QuoteSheet
+        open={sheet === 'quote'}
+        items={priceBook}
+        stock={stock}
+        onClose={() => setSheet(null)}
+        onConfirm={async (input) => {
+          await actions.createQuote(job.id, {
+            title: input.title,
+            options: input.options.map((option) => ({
+              name: option.name,
+              isRecommended: option.isRecommended,
+              lines: option.lines.map((line) => ({
+                priceBookItemId: line.priceBookItemId,
+                quantity: line.quantity,
+              })),
+            })),
+            selectedOptionName: input.selectedOptionName,
+            signatureDataUrl: input.signatureDataUrl,
+            signerName: input.signerName,
+          });
           setSheet(null);
           await reload();
         }}
@@ -740,6 +767,244 @@ function ChangeOrderSheet({
         </label>
 
         <SignaturePad onChange={setSignature} label="Customer approves the extra work" />
+      </div>
+    </Sheet>
+  );
+}
+
+/**
+ * The prompt to quote something else.
+ *
+ * Deliberately its own card rather than a third button under the job's work: what the
+ * technician is being asked is not "add to this job", it is "you are standing in a house,
+ * did you see anything". Those are different questions and putting them side by side gets
+ * the wrong one answered.
+ */
+function QuoteCard({ onQuote }: { onQuote: () => void }) {
+  return (
+    <section className="card p-4">
+      <h2 className="font-bold">Spotted something else?</h2>
+      <p className="mt-1 text-sm text-[var(--color-ink-soft)]">
+        Quote it now, while you are in front of them. Works with no signal.
+      </p>
+      <button type="button" onClick={onQuote} className="btn btn-quiet mt-3 w-full">
+        Quote some work
+      </button>
+    </section>
+  );
+}
+
+/**
+ * A quote written at the kitchen table.
+ *
+ * Three prices, not one. A customer given a single number decides whether to do the work;
+ * a customer given three decides which one — and the middle option is the one most people
+ * take, which is why it is the one marked as recommended.
+ *
+ * Everything here comes off the price book already on the device, so it composes with no
+ * signal. Signing is optional: sometimes the answer is "leave it with me", and a quote
+ * with nobody's name on it is still a quote the office can chase.
+ */
+const TIERS = ['Good', 'Better', 'Best'] as const;
+
+function QuoteSheet({
+  open,
+  items,
+  stock,
+  onClose,
+  onConfirm,
+}: {
+  open: boolean;
+  items: ClientPriceItem[];
+  stock: ClientStockLine[];
+  onClose: () => void;
+  onConfirm: (input: {
+    title: string;
+    options: { name: string; isRecommended: boolean; lines: PickedLine[] }[];
+    selectedOptionName: string;
+    signatureDataUrl?: string;
+    signerName?: string;
+  }) => Promise<void>;
+}) {
+  const [title, setTitle] = useState('');
+  const [optionCount, setOptionCount] = useState(1);
+  const [active, setActive] = useState(0);
+  const [baskets, setBaskets] = useState<PickedLine[][]>([[], [], []]);
+  const [recommended, setRecommended] = useState(0);
+  const [signerName, setSignerName] = useState('');
+  const [signature, setSignature] = useState<string | null>(null);
+
+  const reset = () => {
+    setTitle('');
+    setOptionCount(1);
+    setActive(0);
+    setBaskets([[], [], []]);
+    setRecommended(0);
+    setSignerName('');
+    setSignature(null);
+  };
+
+  const totalOf = (lines: PickedLine[]) =>
+    lines.reduce(
+      (sum, line) =>
+        sum + (line.unitPriceCents * BigInt(Math.round(Number(line.quantity) * 100))) / 100n,
+      0n,
+    );
+
+  const add = (line: PickedLine) =>
+    setBaskets((current) =>
+      current.map((basket, index) => (index === active ? [...basket, line] : basket)),
+    );
+
+  const filled = baskets.slice(0, optionCount).filter((basket) => basket.length > 0);
+  const ready = title.trim().length > 2 && filled.length > 0;
+  const signed = !!signature && signerName.trim().length > 1;
+
+  return (
+    <Sheet
+      open={open}
+      title="Quote some work"
+      onClose={() => {
+        reset();
+        onClose();
+      }}
+      footer={
+        <button
+          type="button"
+          disabled={!ready}
+          onClick={async () => {
+            await onConfirm({
+              title,
+              options: baskets
+                .slice(0, optionCount)
+                .map((lines, index) => ({
+                  name: optionCount === 1 ? 'Proposed work' : TIERS[index],
+                  isRecommended: index === recommended,
+                  lines,
+                }))
+                .filter((option) => option.lines.length > 0),
+              selectedOptionName: optionCount === 1 ? 'Proposed work' : TIERS[active],
+              signatureDataUrl: signed ? signature! : undefined,
+              signerName: signed ? signerName : undefined,
+            });
+            reset();
+          }}
+          className="btn btn-go w-full py-4 disabled:opacity-50"
+        >
+          {signed
+            ? `Accepted · ${money(totalOf(baskets[active]))}`
+            : filled.length > 1
+              ? `Save ${filled.length} options`
+              : 'Save quote'}
+        </button>
+      }
+    >
+      <div className="space-y-4">
+        <p className="rounded-xl px-3 py-2.5 text-sm" style={{ background: 'var(--color-brand-soft)' }}>
+          For work that is <span className="font-bold">not</span> this job. Found something on
+          the way past? Quote it while you are standing in front of them.
+        </p>
+
+        <label className="block space-y-1.5">
+          <span className="text-sm font-medium text-[var(--color-ink-soft)]">What is it for?</span>
+          <input
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder="Water heater looks close to going"
+            className="field-input"
+          />
+        </label>
+
+        {optionCount > 1 && (
+          <div className="flex gap-2">
+            {TIERS.slice(0, optionCount).map((tier, index) => (
+              <button
+                key={tier}
+                type="button"
+                onClick={() => setActive(index)}
+                className="tap flex-1 rounded-xl border px-2 py-2 text-center"
+                style={{
+                  borderColor: index === active ? 'var(--color-brand)' : 'var(--color-line)',
+                  background: index === active ? 'var(--color-brand-soft)' : 'transparent',
+                }}
+              >
+                <span className="block text-sm font-bold">{tier}</span>
+                <span className="block text-xs tabular-nums text-[var(--color-ink-soft)]">
+                  {money(totalOf(baskets[index]))}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {optionCount > 1 && (
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={recommended === active}
+              onChange={() => setRecommended(active)}
+            />
+            <span>Recommend {TIERS[active]}</span>
+          </label>
+        )}
+
+        <div>
+          <div className="mb-2 flex items-center justify-between">
+            <p className="text-sm font-medium text-[var(--color-ink-soft)]">
+              {optionCount > 1 ? `What ${TIERS[active]} includes` : 'What the work is'}
+            </p>
+            {optionCount < TIERS.length && (
+              <button
+                type="button"
+                onClick={() => {
+                  setOptionCount((count) => count + 1);
+                  setActive(optionCount);
+                }}
+                className="text-sm font-semibold"
+                style={{ color: 'var(--color-brand)' }}
+              >
+                + another option
+              </button>
+            )}
+          </div>
+
+          {baskets[active].length > 0 && (
+            <ul className="mb-3 space-y-1 text-sm">
+              {baskets[active].map((line, index) => (
+                <li key={index} className="flex justify-between">
+                  <span>
+                    {line.description} × {line.quantity}
+                  </span>
+                  <span className="tabular-nums">{money(line.unitPriceCents)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <PriceBookPicker items={items} stock={stock} onAdd={add} />
+        </div>
+
+        <div className="card p-4">
+          <p className="text-sm font-medium text-[var(--color-ink-soft)]">
+            If they say yes now
+          </p>
+          <label className="mt-2 block space-y-1.5">
+            <span className="text-sm">Customer name</span>
+            <input
+              value={signerName}
+              onChange={(event) => setSignerName(event.target.value)}
+              className="field-input"
+            />
+          </label>
+          <div className="mt-3">
+            <SignaturePad
+              onChange={setSignature}
+              label={`Customer accepts ${optionCount > 1 ? TIERS[active] : 'this quote'}`}
+            />
+          </div>
+          <p className="mt-2 text-xs text-[var(--color-ink-soft)]">
+            Leave this blank and the quote goes to the office to follow up.
+          </p>
+        </div>
       </div>
     </Sheet>
   );

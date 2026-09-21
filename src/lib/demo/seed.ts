@@ -7,7 +7,13 @@ import { closePeriod } from '../accounting/periods';
 import { postJournalEntry } from '../accounting/ledger';
 import { laborCostedLines, loadedHourlyCost } from '../accounting/rules/labor';
 import { addJobLines, createJob, transitionJob } from '../jobs/service';
-import { approveQuote, convertQuoteToJob, createQuote, sendQuote } from '../quotes/service';
+import {
+  approveQuote,
+  convertQuoteToJob,
+  createQuote,
+  declineQuote,
+  sendQuote,
+} from '../quotes/service';
 import { createInvoiceFromJob, issueInvoice, recordPayment } from '../invoices/service';
 import { consumePartsForJob, receiveStock, transferStock } from '../inventory/service';
 import { payOpenBills, recordJobPurchase } from '../purchasing/service';
@@ -715,20 +721,34 @@ export async function seedDemoCompany(
   // is exactly why it belongs on a technician's scorecard.
   let callbacks = 0;
 
-  // Chosen by count rather than by a coin flip per job, so a small demo dataset still has
-  // rework in it. Selection is weighted by each technician's own callback rate, so the
-  // differences between them — which is the whole point of the scorecard — survive.
+  /*
+   * Chosen by count rather than by a coin flip per job, so a small demo dataset still has
+   * rework in it. Selection is weighted by each technician's own callback rate, so the
+   * differences between them — which is the whole point of the scorecard — survive.
+   *
+   * Only jobs old enough for somebody to have called back about are eligible. Filtering
+   * after the draw instead of before it meant the "at least one" floor was not a floor:
+   * pick the one candidate whose callback would land next week and you get none at all,
+   * which is how a company with four and a half thousand jobs ended up with a scorecard
+   * claiming nobody had ever gone back.
+   */
+  const MIN_CALLBACK_GAP_DAYS = 3;
+  const MAX_CALLBACK_GAP_DAYS = 45;
+  const eligible = completedJobs.filter(
+    (job) => job.date.getTime() + MIN_CALLBACK_GAP_DAYS * 86_400_000 <= today.getTime(),
+  );
+
   const callbackTarget = Math.max(
-    completedJobs.length > 0 ? 1 : 0,
+    eligible.length > 0 ? 1 : 0,
     Math.round(
-      completedJobs.reduce(
+      eligible.reduce(
         (total, job) => total + (techs.find((t) => t.technicianId === job.techId)?.callbackRate ?? 0),
         0,
       ),
     ),
   );
 
-  const weighted = completedJobs
+  const weighted = eligible
     .map((job) => {
       const rate = techs.find((t) => t.technicianId === job.techId)?.callbackRate ?? 0.001;
       // Efraimidis-Spirakis: the largest keys are a weighted sample without replacement.
@@ -740,8 +760,13 @@ export async function seedDemoCompany(
 
   for (const job of weighted) {
     const tech = techs.find((t) => t.technicianId === job.techId)!;
-    const callbackDate = new Date(job.date.getTime() + rng.int(3, 45) * 86_400_000);
-    if (callbackDate > today) continue;
+    const latestGap = Math.min(
+      MAX_CALLBACK_GAP_DAYS,
+      Math.floor((today.getTime() - job.date.getTime()) / 86_400_000),
+    );
+    const callbackDate = new Date(
+      job.date.getTime() + rng.int(MIN_CALLBACK_GAP_DAYS, latestGap) * 86_400_000,
+    );
 
     const original = await db.job.findUniqueOrThrow({
       where: { id: job.jobId },
@@ -864,6 +889,9 @@ async function inBatches<T, R>(
   return results;
 }
 
+/** How long a quote stays good for, matching the engine's default validity window. */
+const QUOTE_VALID_DAYS = 30;
+
 interface OneJobInput {
   rng: Rng;
   workDate: Date;
@@ -939,6 +967,13 @@ async function seedOneJob(
   const wasQuoted = rng.bool(0.36);
 
   if (wasQuoted) {
+    // Quoted first, booked after. A pipeline where every quote was raised at the instant
+    // the seed ran has no ageing in it, and ageing is the only thing a pipeline report is
+    // really for — the oldest unanswered quote is the one somebody should be ringing.
+    const quotedAt = new Date(
+      Math.min(workDate.getTime() - rng.int(3, 24) * 86_400_000, Date.now()),
+    );
+
     const quote = await createQuote(db, ctx, {
       locationId: input.locationId,
       customerId: input.customerId,
@@ -946,17 +981,45 @@ async function seedOneJob(
       title: chosen.length > 1 ? `${task.name} + ${chosen.length - 1} more` : task.name,
       presentedByTechnicianId: tech.technicianId,
       lines: lines.map((l) => ({ priceBookItemId: l.priceBookItemId, quantity: l.quantity })),
+      createdAt: quotedAt,
     });
-    await sendQuote(db, ctx, quote.id);
+    await sendQuote(db, ctx, quote.id, { at: quotedAt });
 
-    // A close rate a shop would recognize. Unclosed quotes stay on the pipeline report.
-    if (!rng.bool(0.62)) return { jobId: quote.id, completed: false };
+    /*
+     * A close rate a shop would recognize.
+     *
+     * The ones that did not close do not sit in the pipeline for ever. A quote is good for
+     * thirty days; past that the customer has decided, whether or not they said so, and a
+     * pipeline still showing last spring's quotes as live is a pipeline nobody trusts. So
+     * an old one is written off and only the recent ones stay open — which is also what
+     * makes the close rate a real fraction rather than a number that only falls.
+     */
+    if (!rng.bool(0.62)) {
+      const ageDays = (Date.now() - quotedAt.getTime()) / 86_400_000;
+      if (ageDays > QUOTE_VALID_DAYS) {
+        await declineQuote(
+          db,
+          ctx,
+          quote.id,
+          rng.pick([
+            'Went with another contractor',
+            'Customer decided to leave it',
+            'No answer after three attempts',
+            'Out of budget this year',
+          ]),
+          { at: new Date(quotedAt.getTime() + QUOTE_VALID_DAYS * 86_400_000) },
+        );
+      }
+      return { jobId: quote.id, completed: false };
+    }
 
+    // Signed somewhere between the quote and the work, which is when it actually is.
     await approveQuote(db, ctx, quote.id, {
       signerName: 'Customer signature',
       signatureStorageKey: `demo/signatures/${quote.id}.png`,
       ipAddress: '198.51.100.24',
       deviceInfo: 'iPad (field)',
+      approvedAt: new Date(quotedAt.getTime() + (workDate.getTime() - quotedAt.getTime()) / 2),
     });
     const job = await convertQuoteToJob(db, ctx, quote.id, {
       scheduledStart: workDate,

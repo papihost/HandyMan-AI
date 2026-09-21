@@ -218,6 +218,55 @@ export const actions = {
     );
   },
 
+  /**
+   * A quote written on site.
+   *
+   * Nothing about it touches this job, so there is no optimistic local change to make —
+   * the quote belongs to the customer and the property, not to the call the technician
+   * happens to be on. It queues like everything else and lands when there is signal.
+   */
+  createQuote: async (
+    jobId: string,
+    input: {
+      title?: string;
+      scopeOfWork?: string;
+      options: {
+        name: string;
+        isRecommended?: boolean;
+        lines: { priceBookItemId: string; quantity: string }[];
+      }[];
+      selectedOptionName?: string;
+      signatureDataUrl?: string;
+      signerName?: string;
+    },
+  ): Promise<void> => {
+    let storageKey: string | undefined;
+    const blobKeys: string[] = [];
+
+    if (input.signatureDataUrl) {
+      const blob = await (await fetch(input.signatureDataUrl)).blob();
+      storageKey = `jobs/${jobId}/quote-${crypto.randomUUID()}.png`;
+      await idb.put(STORES.blobs, { storageKey, blob, jobId, stage: 'SIGNATURE' });
+      blobKeys.push(storageKey);
+    }
+
+    await act(
+      'CREATE_QUOTE',
+      jobId,
+      {
+        title: input.title,
+        scopeOfWork: input.scopeOfWork,
+        options: input.options,
+        selectedOptionName: input.selectedOptionName,
+        signatureStorageKey: storageKey,
+        signerName: input.signerName,
+        deviceInfo: navigator.userAgent,
+      },
+      (job) => job,
+      blobKeys,
+    );
+  },
+
   createChangeOrder: async (
     jobId: string,
     input: {

@@ -19,6 +19,16 @@ export function SignaturePad({
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const drawing = useRef(false);
+  /*
+   * Whether anything has been drawn, in a ref as well as in state.
+   *
+   * The state drives the Clear button; the ref is what `end` reads. A stroke fast enough
+   * to finish inside one frame — a flick, a short initial, anyone in a hurry — runs
+   * pointerdown, the moves and pointerup before React has re-rendered, so `end` would
+   * close over the old `false` and quietly hand back no signature at all. The customer
+   * sees their name on the glass and the button stays dead.
+   */
+  const inked = useRef(false);
   const [hasInk, setHasInk] = useState(false);
 
   const prepare = useCallback(() => {
@@ -69,6 +79,7 @@ export function SignaturePad({
     const { x, y } = positionOf(event);
     context.lineTo(x, y);
     context.stroke();
+    inked.current = true;
     if (!hasInk) setHasInk(true);
   };
 
@@ -76,7 +87,7 @@ export function SignaturePad({
     if (!drawing.current) return;
     drawing.current = false;
     const canvas = canvasRef.current;
-    if (canvas && hasInk) onChange(canvas.toDataURL('image/png'));
+    if (canvas && inked.current) onChange(canvas.toDataURL('image/png'));
   };
 
   const clear = () => {
@@ -85,6 +96,7 @@ export function SignaturePad({
     if (!canvas || !context) return;
 
     context.clearRect(0, 0, canvas.width, canvas.height);
+    inked.current = false;
     setHasInk(false);
     onChange(null);
   };

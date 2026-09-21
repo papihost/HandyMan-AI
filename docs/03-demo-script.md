@@ -73,23 +73,33 @@ Switch to a phone-sized window, logged in as **Marcus Deleon, technician, Mesa**
 5. He finds extra damage → **Found extra work**. A change order priced from the price book,
    with "Get this signed before you start the extra work" on it, and the customer signs on
    the glass.
-6. Before and after photos, by stage. Then **Finish job** and the completion signature.
-7. **Reload the page, still offline.** The queue is still there — it is IndexedDB, not React
+6. **Spotted something else?** — the beat worth slowing down for. The water heater in the
+   corner is on its last legs, and the usual outcome is "I'll get someone to call you".
+   Instead: **Quote some work**, still offline. Add a line, then **+ another option**, and
+   again — Good, Better, Best, each priced off the book already on the device, with the
+   middle one marked as the recommendation. A customer given one number decides whether; a
+   customer given three decides which.
+
+   The customer signs the tier they picked and the button reads **Accepted · 295.00**. Say
+   plainly what just happened: a technician who cannot approve a quote, and must never be
+   able to, just had one approved — the authority is the signature, not the badge.
+7. Before and after photos, by stage. Then **Finish job** and the completion signature.
+8. **Reload the page, still offline.** The queue is still there — it is IndexedDB, not React
    state — so a tablet that sleeps, or a browser that reaps the tab, loses nothing.
-8. **Turn the network back on.** The outbox drains in order and the banner returns to
-   "All saved".
-9. Note what he *cannot* see: no cost, no margin, no other techs' jobs. Open the network tab
+9. **Turn the network back on.** The outbox drains in order and the banner returns to
+   "All saved". The quote is in the office before he is back in the van — **Quotes** shows
+   it accepted, with his name against it as the person who presented it.
+10. Note what he *cannot* see: no cost, no margin, no other techs' jobs. Open the network tab
    and look at the pull payload — 43KB, and the words `costCents`, `unitCostCents` and
    `loadedHourly` do not appear in it. The cost fields are not hidden on the client; they
    are not sent.
 
-*The line:* "Your techs document everything, price extra work on the spot, and never see your
-margins."
+*The line:* "Your techs document everything, quote what they find while they are standing in
+front of it, and never see your margins."
 
 > **Not yet built, so do not promise it:** there is no camera-driven quoting and no AI
-> drafting. On-site pricing is the change order in step 5, built from the price book by hand.
-> Good/better/best option sets exist in the quoting engine and on the office side, not on the
-> technician's screen. If they ask for quoting from the field, that is a roadmap answer.
+> drafting. The technician picks the lines from the price book. If they ask whether a photo
+> can write the quote, that is a roadmap answer.
 
 ### Act 3 — "Are the books right?" (8 min)
 Switch to **Diane Kowalczyk, controller**.
@@ -215,7 +225,10 @@ the product's value is that it surfaces them:
   the value vary with the seed; read them off the screen rather than quoting them.
 - **Some jobs are still in flight**, so the dispatch board has work on it rather than being
   a graveyard of completed calls.
-- **Some quotes are still open**, so the pipeline report has a pipeline.
+- **A live pipeline and a graveyard behind it.** Around forty quotes are still open, none
+  older than their thirty-day validity; the several hundred that were never answered are
+  written off rather than left sitting in the pipeline for a year, which is what makes the
+  close rate a real fraction — about 64% — instead of a number that only ever falls.
 - **Some invoices are unpaid and ageing**, so the AR aging report has buckets.
 - **Warranty callbacks exist**, costed but never billed, assigned back to the technician who
   did the original job so they land on that technician's scorecard. Rates run from under 1%

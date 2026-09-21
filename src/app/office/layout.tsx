@@ -7,6 +7,7 @@ const NAV = [
   { href: '/office', label: 'Dashboard' },
   { href: '/office/dispatch', label: 'Dispatch' },
   { href: '/office/jobs', label: 'Jobs' },
+  { href: '/office/quotes', label: 'Quotes' },
   { href: '/office/invoices', label: 'Receivables' },
   { href: '/office/pricing', label: 'Pricing' },
   { href: '/office/inventory', label: 'Inventory' },

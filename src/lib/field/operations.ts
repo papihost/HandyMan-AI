@@ -1,5 +1,10 @@
 import type { JobStatus, PrismaClient } from '@prisma/client';
-import { postingContextFor, systemContext, type AuthContext } from '../auth/context';
+import {
+  customerSignedContextFor,
+  postingContextFor,
+  systemContext,
+  type AuthContext,
+} from '../auth/context';
 import { NotFoundError, ValidationError } from '../errors';
 import { ZERO, type Cents } from '../money';
 import { postJournalEntry } from '../accounting/ledger';
@@ -27,6 +32,7 @@ export type FieldOperationType =
   | 'ADD_PHOTO'
   | 'CAPTURE_SIGNATURE'
   | 'CREATE_CHANGE_ORDER'
+  | 'CREATE_QUOTE'
   | 'COMPLETE_CHECKLIST'
   | 'ADD_JOB_NOTE';
 
@@ -561,6 +567,105 @@ const addJobNote: Handler = async (handler) => {
   return { entityId: note.id };
 };
 
+// ---------------------------------------------------------------- quoting
+
+/**
+ * A quote written at the kitchen table.
+ *
+ * Work found on site that is not this job's work — a water heater on its last legs noticed
+ * while fixing a tap. The technician is standing there, the customer is standing there, and
+ * the alternative is a promise to "get someone to call you", which is where most of this
+ * trade's revenue quietly goes.
+ *
+ * Options rather than a single price, because a customer offered one number decides yes or
+ * no, and a customer offered three decides which. The price book travels to the device, so
+ * this composes offline like everything else: the quote is written at the table and posted
+ * when there is signal.
+ *
+ * A signature approves it on the spot. Approval is the customer's authority, not the
+ * technician's — see `customerSignedContextFor` — so without a signature the quote is
+ * created and left for the office to chase.
+ */
+const createQuote: Handler = async (handler) => {
+  const { db, ctx, operation, technicianId, occurredAt } = handler;
+  const payload = operation.payload;
+
+  const job = await loadTargetJob(handler, { allowBilled: true });
+
+  const options = (payload.options ?? []) as {
+    name?: string;
+    description?: string;
+    isRecommended?: boolean;
+    lines?: {
+      priceBookItemId?: string;
+      description?: string;
+      quantity?: string;
+      unitPriceCents?: string;
+    }[];
+  }[];
+
+  const usable = options
+    .map((option) => ({
+      name: option.name?.trim() || 'Proposed work',
+      description: option.description?.trim() || undefined,
+      isRecommended: option.isRecommended === true,
+      lines: (option.lines ?? [])
+        .filter((line) => line.priceBookItemId || line.description)
+        .map((line) => ({
+          priceBookItemId: line.priceBookItemId,
+          description: line.description,
+          quantity: line.quantity ?? '1',
+          ...(line.unitPriceCents ? { unitPriceCents: amountFrom(line.unitPriceCents) } : {}),
+        })),
+    }))
+    .filter((option) => option.lines.length > 0);
+
+  if (usable.length === 0) throw new ValidationError('A quote needs at least one line');
+
+  const target = await db.job.findUniqueOrThrow({
+    where: { id: job.id },
+    select: { customerId: true, propertyId: true, locationId: true },
+  });
+
+  const { createQuote: create, approveQuote: approve } = await import('../quotes/service');
+
+  const quote = await create(db, ctx, {
+    locationId: target.locationId,
+    customerId: target.customerId,
+    propertyId: target.propertyId,
+    title: (payload.title as string) ?? 'Work found on site',
+    scopeOfWork: (payload.scopeOfWork as string) ?? undefined,
+    presentedByTechnicianId: technicianId,
+    validForDays: typeof payload.validForDays === 'number' ? payload.validForDays : undefined,
+    options: usable,
+  });
+
+  // Signed at the table: the customer accepted before the technician left.
+  if (payload.signatureStorageKey) {
+    const chosen = payload.selectedOptionName
+      ? quote.options.find((option) => option.name === payload.selectedOptionName)
+      : quote.options.find((option) => option.isRecommended) ?? quote.options[0];
+
+    await approve(db, customerSignedContextFor(ctx), quote.id, {
+      quoteOptionId: chosen?.id,
+      signerName: (payload.signerName as string) ?? 'Customer',
+      signerRole: (payload.signerRole as string) ?? undefined,
+      signatureStorageKey: payload.signatureStorageKey as string,
+      deviceInfo: (payload.deviceInfo as string) ?? undefined,
+    });
+  }
+
+  return {
+    entityId: quote.id,
+    serverData: {
+      quoteNo: quote.quoteNo,
+      totalCents: quote.totalCents.toString(),
+      approved: Boolean(payload.signatureStorageKey),
+      presentedAt: occurredAt.toISOString(),
+    },
+  };
+};
+
 export const HANDLERS: Record<FieldOperationType, Handler> = {
   JOB_STATUS: jobStatus,
   CLOCK_IN: clockIn,
@@ -570,6 +675,7 @@ export const HANDLERS: Record<FieldOperationType, Handler> = {
   ADD_PHOTO: addPhoto,
   CAPTURE_SIGNATURE: captureSignature,
   CREATE_CHANGE_ORDER: createChangeOrder,
+  CREATE_QUOTE: createQuote,
   COMPLETE_CHECKLIST: completeChecklist,
   ADD_JOB_NOTE: addJobNote,
 };

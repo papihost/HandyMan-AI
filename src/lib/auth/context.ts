@@ -114,6 +114,23 @@ export function postingContextFor(ctx: AuthContext): AuthContext {
 }
 
 /**
+ * Authority arising from a customer's signature rather than from the operator's role.
+ *
+ * `quote:approve` guards the office deciding a quote is accepted. It is not what guards a
+ * customer signing one on a technician's tablet: there the authority is the signature, and
+ * the technician is a witness to it rather than the person exercising it. A technician
+ * must never be able to approve a quote on their own say-so, and must still be able to
+ * hold out the tablet and have the customer accept — this is how both are true.
+ *
+ * The signature is the evidence and is required by the operation that calls this; without
+ * one there is nothing to elevate and nothing to point at afterwards. The original actor
+ * is carried through, so the record shows whose tablet it happened on.
+ */
+export function customerSignedContextFor(ctx: AuthContext): AuthContext {
+  return { ...systemContext(ctx.organizationId, ctx.userId), sessionId: ctx.sessionId };
+}
+
+/**
  * A system context for seeds, migrations, scheduled jobs, and posting rules invoked by
  * the engine itself. It is deliberately explicit: nothing acquires full authority by
  * accident, it has to be asked for by name.

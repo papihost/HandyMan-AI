@@ -553,3 +553,151 @@ describe('an offline day, replayed', () => {
     expect(await db.timeEntry.count({ where: { jobId: job.id } })).toBe(1);
   });
 });
+
+/**
+ * Quoting from the kitchen table.
+ *
+ * A technician standing in a house that needs a water heater is the cheapest lead this
+ * trade ever gets, and the usual outcome is "I'll have someone call you". The device
+ * carries the price book, so the quote is written there and posted when there is signal.
+ */
+describe('quoting on site', () => {
+  it('writes a three-option quote offline and approves the one the customer picked', async () => {
+    const { job } = await makeJob({ title: 'Replace kitchen faucet' });
+    const at = utc(2026, 6, 11);
+
+    const response = await pushOperations(db, techCtx, {
+      deviceId: `ipad-${randomUUID().slice(0, 6)}`,
+      operations: [
+        op(
+          'CREATE_QUOTE',
+          {
+            title: 'Water heater looks close to going',
+            options: [
+              { name: 'Good', lines: [{ priceBookItemId: laborItem, quantity: '2' }] },
+              {
+                name: 'Better',
+                isRecommended: true,
+                lines: [
+                  { priceBookItemId: laborItem, quantity: '3' },
+                  { priceBookItemId: partItem, quantity: '1' },
+                ],
+              },
+              {
+                name: 'Best',
+                lines: [
+                  { priceBookItemId: laborItem, quantity: '4' },
+                  { priceBookItemId: partItem, quantity: '3' },
+                ],
+              },
+            ],
+            selectedOptionName: 'Better',
+            signerName: 'Dana Alvarez',
+            signatureStorageKey: 'jobs/quote-signature.png',
+          },
+          job.id,
+          at,
+        ),
+      ],
+    });
+
+    expect(response.applied).toBe(1);
+
+    const quote = await db.quote.findFirstOrThrow({
+      where: { organizationId: org.organizationId },
+      include: { options: { orderBy: { sortOrder: 'asc' } }, lines: true },
+    });
+
+    expect(quote.options.map((option) => option.name)).toEqual(['Good', 'Better', 'Best']);
+    expect(quote.presentedByTechnicianId).toBe(tech.technicianId);
+
+    // The customer accepted Better, so Better's figures are the quote's figures.
+    const better = quote.options.find((option) => option.name === 'Better')!;
+    expect(quote.status).toBe('APPROVED');
+    expect(quote.subtotalCents).toBe(better.subtotalCents);
+    expect(better.isSelected).toBe(true);
+    expect(quote.signatureId).not.toBeNull();
+
+    // Three options priced from the same book cost more as they get better, or they are
+    // not options, they are a list.
+    const totals = quote.options.map((option) => option.totalCents);
+    expect(totals[0] < totals[1] && totals[1] < totals[2]).toBe(true);
+  });
+
+  it('leaves an unsigned quote for the office rather than approving it', async () => {
+    const { job } = await makeJob({ title: 'Rekey locks' });
+
+    await pushOperations(db, techCtx, {
+      deviceId: `ipad-${randomUUID().slice(0, 6)}`,
+      operations: [
+        op(
+          'CREATE_QUOTE',
+          {
+            title: 'Gutters need clearing',
+            options: [{ name: 'Proposed work', lines: [{ priceBookItemId: laborItem, quantity: '1' }] }],
+          },
+          job.id,
+          utc(2026, 6, 12),
+        ),
+      ],
+    });
+
+    const quote = await db.quote.findFirstOrThrow({
+      where: { organizationId: org.organizationId, title: 'Gutters need clearing' },
+    });
+
+    // "Leave it with me" is a real answer, and the quote still has to exist afterwards.
+    expect(quote.status).toBe('DRAFT');
+    expect(quote.signatureId).toBeNull();
+  });
+
+  it('still refuses a technician approving a quote on their own say-so', async () => {
+    const { job } = await makeJob({ title: 'Patch drywall' });
+
+    await pushOperations(db, techCtx, {
+      deviceId: `ipad-${randomUUID().slice(0, 6)}`,
+      operations: [
+        op(
+          'CREATE_QUOTE',
+          {
+            title: 'Fence panel replacement',
+            options: [{ name: 'Proposed work', lines: [{ priceBookItemId: laborItem, quantity: '1' }] }],
+          },
+          job.id,
+          utc(2026, 6, 13),
+        ),
+      ],
+    });
+
+    const quote = await db.quote.findFirstOrThrow({
+      where: { organizationId: org.organizationId, title: 'Fence panel replacement' },
+    });
+
+    /*
+     * The elevation lives inside the operation and is unlocked by a signature. Reaching
+     * for approveQuote directly, as the technician, gets the answer it should: no. A
+     * technician who could approve their own quotes could write themselves a commission.
+     */
+    const { approveQuote } = await import('../src/lib/quotes/service');
+    await expect(
+      approveQuote(db, techCtx, quote.id, {
+        signerName: 'Definitely The Customer',
+        signatureStorageKey: 'jobs/nope.png',
+      }),
+    ).rejects.toThrow(/Missing permission: quote:approve/);
+  });
+
+  it('refuses a quote with nothing on it', async () => {
+    const { job } = await makeJob({ title: 'Nothing doing' });
+
+    const response = await pushOperations(db, techCtx, {
+      deviceId: `ipad-${randomUUID().slice(0, 6)}`,
+      operations: [
+        op('CREATE_QUOTE', { title: 'Empty', options: [{ name: 'Good', lines: [] }] }, job.id),
+      ],
+    });
+
+    expect(response.applied).toBe(0);
+    expect(response.results[0].outcome).not.toBe('APPLIED');
+  });
+});

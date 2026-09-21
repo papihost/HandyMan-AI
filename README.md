@@ -151,19 +151,27 @@ and row locks on the document-number sequence. A mock would prove nothing about 
   technician's day.
 - The tablet app itself: an installable PWA with a service worker for the offline shell,
   IndexedDB for the day's work and queued photos, and screens for the whole visit — my day,
-  the job with access notes and prior visits, on-site quoting from the price book, parts off
-  the van, before/after photos, a change order signed on the glass, and completion.
-- The office web app: an owner dashboard, a dispatch board, jobs with ledger-backed costing
-  that drills into the journal entries the job posted, invoices showing what was billed,
-  the margin on it and how the sales tax was worked out, a journal entry viewer that links
-  back to the document that caused it, financial statements with account drill-down,
-  receivables, a price book review, and inventory — valuation against the ledger accounts
-  it must equal, what each van is carrying and short of, and every movement a part has made
-  with the job it went out on, and the month-end close — what is in the month, what is
-  worth finishing first, the close itself, a reopening that insists on a reason, and every
-  posting the lock has turned away. Every figure on
-  every screen is read from posted journal lines or from the documents themselves — there is
-  no summary table a report could disagree with.
+  the job with access notes and prior visits, parts off the van, quoting on site in
+  good/better/best options priced from the book already on the device and accepted on the
+  glass, before/after photos, a change order signed on the glass, and completion.
+- The office web app. Every figure on every screen is read from posted journal lines or
+  from the documents themselves — there is no summary table a report could disagree with.
+  - **Dashboard** — the company's four numbers, then the findings: work nobody invoiced, a
+    flat rate priced under what it costs, a branch whose margin goes on hours that never
+    reached a job.
+  - **Dispatch**, and **jobs** with ledger-backed costing that drills into the entries the
+    job posted, and states what an hour of that technician's time actually costs.
+  - **Quotes** — what is still out there, what it is worth, and a close rate measured
+    against the quotes that got an answer rather than against everything ever sent.
+  - **Invoices** — what was billed, the margin on it, and how the sales tax was worked out,
+    jurisdiction by jurisdiction.
+  - **Journal entries**, both sides, immutable, linking back to the document that caused
+    them; **financial statements** with account drill-down; **receivables**.
+  - **Price book review** — every flat rate against the cost it carries, thinnest first.
+  - **Inventory** — valuation against the ledger accounts it must equal, what each van is
+    carrying and short of, and every movement a part has made with the job it went out on.
+  - **Close** — what is in the month, what is worth finishing first, the close itself, a
+    reopening that insists on a reason, and every posting the lock has turned away.
 - The migration wizard: the five entities in dependency order, detection you can overrule,
   a mapping table listed by target field with the reason for each match, validation that
   reruns as you change it, a dry run that really executes and is rolled back, the
