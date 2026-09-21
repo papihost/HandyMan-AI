@@ -209,3 +209,131 @@ export async function lockPeriod(
 
   return locked;
 }
+
+export interface PeriodReadiness {
+  periodId: string;
+  fiscalYear: number;
+  periodNumber: number;
+  startDate: Date;
+  endDate: Date;
+  status: string;
+  entryCount: number;
+  postedCents: bigint;
+  /** Earlier periods still open. A month cannot close over an open one behind it. */
+  blockedBy: { id: string; fiscalYear: number; periodNumber: number }[];
+  /** Work worth finishing before the month is signed off. Not blocking. */
+  warnings: { kind: string; count: number; message: string }[];
+  canClose: boolean;
+}
+
+/**
+ * What stands between a month and being closed.
+ *
+ * Two different things, kept apart deliberately. A blocker is structural — an earlier
+ * month still open, which the engine will refuse anyway. A warning is judgement: finished
+ * work nobody billed, or an invoice still in draft, both of which belong in the month they
+ * happened in and are a great deal more awkward to put there afterwards.
+ *
+ * The warnings do not prevent a close, because sometimes the right answer is to close
+ * anyway and deal with it. They just mean nobody gets to say they were not told.
+ */
+export async function periodReadiness(
+  db: PrismaClient,
+  ctx: AuthContext,
+  periodId: string,
+): Promise<PeriodReadiness> {
+  requirePermission(ctx, PERMISSIONS.GL_READ);
+
+  const period = await db.accountingPeriod.findFirst({
+    where: { id: periodId, organizationId: ctx.organizationId },
+  });
+  if (!period) throw new NotFoundError('Accounting period', periodId);
+
+  const within = { gte: period.startDate, lte: period.endDate };
+
+  const [entries, totals, earlierOpen, unbilled, drafts] = await Promise.all([
+    db.journalEntry.count({
+      where: { organizationId: ctx.organizationId, periodId, postedAt: { not: null } },
+    }),
+    db.journalLine.aggregate({
+      where: {
+        journalEntry: { organizationId: ctx.organizationId, periodId, postedAt: { not: null } },
+      },
+      _sum: { debitCents: true },
+    }),
+    db.accountingPeriod.findMany({
+      where: {
+        organizationId: ctx.organizationId,
+        endDate: { lt: period.startDate },
+        status: 'OPEN',
+      },
+      orderBy: { startDate: 'asc' },
+      select: { id: true, fiscalYear: true, periodNumber: true },
+    }),
+    db.job.count({
+      where: {
+        organizationId: ctx.organizationId,
+        status: 'COMPLETED',
+        isBillable: true,
+        completedAt: within,
+        invoices: { none: {} },
+      },
+    }),
+    db.invoice.count({
+      where: { organizationId: ctx.organizationId, status: 'DRAFT', issueDate: within },
+    }),
+  ]);
+
+  const warnings: PeriodReadiness['warnings'] = [];
+  if (unbilled > 0) {
+    warnings.push({
+      kind: 'UNBILLED_JOBS',
+      count: unbilled,
+      message: `${unbilled} finished ${unbilled === 1 ? 'job was' : 'jobs were'} never invoiced — the revenue belongs in this month`,
+    });
+  }
+  if (drafts > 0) {
+    warnings.push({
+      kind: 'DRAFT_INVOICES',
+      count: drafts,
+      message: `${drafts} ${drafts === 1 ? 'invoice is' : 'invoices are'} still in draft, so nothing has posted for ${drafts === 1 ? 'it' : 'them'}`,
+    });
+  }
+
+  return {
+    periodId: period.id,
+    fiscalYear: period.fiscalYear,
+    periodNumber: period.periodNumber,
+    startDate: period.startDate,
+    endDate: period.endDate,
+    status: period.status,
+    entryCount: entries,
+    postedCents: totals._sum.debitCents ?? 0n,
+    blockedBy: earlierOpen,
+    warnings,
+    canClose: period.status === 'OPEN' && earlierOpen.length === 0,
+  };
+}
+
+/** Closes, reopenings and refused postings, newest first — the period's own history. */
+export async function periodAuditTrail(db: PrismaClient, ctx: AuthContext, limit = 40) {
+  requirePermission(ctx, PERMISSIONS.AUDIT_READ);
+
+  return db.auditLog.findMany({
+    where: {
+      organizationId: ctx.organizationId,
+      entityType: 'AccountingPeriod',
+      action: { in: ['CLOSE_PERIOD', 'REOPEN_PERIOD', 'LOCK_PERIOD', 'REFUSED_POSTING'] },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: limit,
+    select: {
+      id: true,
+      action: true,
+      entityId: true,
+      after: true,
+      createdAt: true,
+      user: { select: { firstName: true, lastName: true } },
+    },
+  });
+}

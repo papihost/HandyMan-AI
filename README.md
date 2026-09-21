@@ -104,7 +104,7 @@ Resetting is safe by construction: it refuses on any organization whose `dataMod
 ## Testing
 
 ```bash
-npm test          # 305 tests: unit + integration against Postgres
+npm test          # 307 tests: unit + integration against Postgres
 npm run typecheck
 ```
 
@@ -159,7 +159,9 @@ and row locks on the document-number sequence. A mock would prove nothing about 
   back to the document that caused it, financial statements with account drill-down,
   receivables, a price book review, and inventory — valuation against the ledger accounts
   it must equal, what each van is carrying and short of, and every movement a part has made
-  with the job it went out on. Every figure on
+  with the job it went out on, and the month-end close — what is in the month, what is
+  worth finishing first, the close itself, a reopening that insists on a reason, and every
+  posting the lock has turned away. Every figure on
   every screen is read from posted journal lines or from the documents themselves — there is
   no summary table a report could disagree with.
 - The migration wizard: the five entities in dependency order, detection you can overrule,

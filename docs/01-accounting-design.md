@@ -213,6 +213,23 @@ earlier period to be closed first, so a correction cannot be slipped in behind a
 that has already been reported. Reopening requires `period:reopen`, demands a reason, and
 writes an audit record. `LOCKED` is permanent.
 
+A refused posting is recorded as well as refused. `postJournalEntry` catches
+`ClosedPeriodError` and writes a `REFUSED_POSTING` audit row carrying the date, the amount,
+the source and the memo — on the base client rather than the caller's transaction, because
+that transaction is already rolled back and the record has to survive it. Logging never
+breaks the thing it is logging: a failure to write the row is swallowed, and the caller
+still gets the refusal it was going to get. One refusal is a mistake; a run of them from
+one person, always into the same month, is the thing nobody wants to discover during an
+audit, so `/office/periods` counts them on its own panel rather than leaving them in a log
+nobody opens.
+
+`periodReadiness` answers what stands between a month and being closed, and keeps two
+different things apart. A **blocker** is structural — an earlier month still open, which
+the engine refuses anyway. A **warning** is judgement: finished work nobody billed, or an
+invoice still in draft, both of which belong in the month they happened in and are a great
+deal more awkward to put there afterwards. Warnings do not prevent a close, because
+sometimes closing anyway is the right answer.
+
 **Document numbering** allocates inside the caller's transaction with `SELECT … FOR
 UPDATE` on the sequence row, so a rollback returns the number to the pool and concurrent
 callers serialize. The scope column uses an empty string rather than `NULL` for

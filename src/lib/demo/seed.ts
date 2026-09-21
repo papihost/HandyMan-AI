@@ -792,8 +792,11 @@ export async function seedDemoCompany(
   log(`Callbacks: ${callbacks} warranty jobs, costed but not billed`);
 
   // ---------------------------------------------------------------- period close
-  // Everything up to the end of the month before last is closed, so the demo can show a
-  // posting being refused and a reopening being audited.
+  /*
+   * Everything up to two months back is closed, which leaves a month sitting ready to be
+   * closed on screen and the one behind it carrying a reason not to — the finished jobs
+   * nobody invoiced. That pair is the whole of the close screen's story.
+   */
   const closeThrough = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 1, 0));
   const closable = await db.accountingPeriod.findMany({
     where: { organizationId: org.id, endDate: { lte: closeThrough }, status: 'OPEN' },
@@ -802,7 +805,16 @@ export async function seedDemoCompany(
   for (const period of closable) {
     await closePeriod(db, ctx, period.id);
   }
-  log(`Periods: ${closable.length} closed through ${closeThrough.toISOString().slice(0, 7)}`);
+  // Reported from the last period actually closed. The cutoff date falls on the first of
+  // a month and a period ends at midnight on its last day, so naming the cutoff claimed a
+  // month that is in fact still open — which is the month a presenter is about to close.
+  const lastClosed = closable[closable.length - 1];
+  log(
+    `Periods: ${closable.length} closed` +
+      (lastClosed
+        ? ` through ${lastClosed.fiscalYear}-${String(lastClosed.periodNumber).padStart(2, '0')}`
+        : ''),
+  );
 
   const [invoiceCount, paymentCount, entryCount, jobCount] = await Promise.all([
     db.invoice.count({ where: { organizationId: org.id } }),

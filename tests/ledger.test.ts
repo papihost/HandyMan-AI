@@ -3,7 +3,13 @@ import { db } from '../src/lib/db';
 import { systemContext } from '../src/lib/auth/context';
 import { ACCOUNTS } from '../src/lib/accounting/chart-of-accounts';
 import { postJournalEntry, reverseJournalEntry } from '../src/lib/accounting/ledger';
-import { closePeriod, findPeriodFor, reopenPeriod } from '../src/lib/accounting/periods';
+import {
+  closePeriod,
+  findPeriodFor,
+  periodAuditTrail,
+  periodReadiness,
+  reopenPeriod,
+} from '../src/lib/accounting/periods';
 import { balanceSheet, profitByLocation, trialBalance } from '../src/lib/accounting/reports';
 import { invoiceIssuedLines } from '../src/lib/accounting/rules/invoice';
 import { paymentReceivedLines } from '../src/lib/accounting/rules/payment';
@@ -317,7 +323,7 @@ describe('reversal', () => {
 });
 
 describe('period control', () => {
-  it('refuses a posting into a closed period', async () => {
+  it('refuses a posting into a closed period, and records the attempt', async () => {
     const closeOrg = await createTestOrg('Periods');
     const period = await findPeriodFor(closeOrg.db, closeOrg.organizationId, utc(2025, 1, 15));
 
@@ -328,12 +334,99 @@ describe('period control', () => {
       postJournalEntry(db, closeOrg.systemCtx, {
         entryDate: utc(2025, 1, 20),
         source: 'MANUAL',
+        memo: 'Backdated by somebody',
         lines: [
           { accountCode: ACCOUNTS.BANK_OPERATING, debitCents: 100n },
           { accountCode: ACCOUNTS.OWNERS_EQUITY, creditCents: 100n },
         ],
       }),
     ).rejects.toThrow(/period is CLOSED/);
+
+    /*
+     * Refusing it is half the job. A run of these is somebody backdating, and the first
+     * time anyone notices should not be the audit — so the attempt is recorded, on its own
+     * connection, because the transaction that carried it is already rolled back.
+     */
+    const refusal = await db.auditLog.findFirst({
+      where: {
+        organizationId: closeOrg.organizationId,
+        action: 'REFUSED_POSTING',
+        entityId: '2025-01-20',
+      },
+    });
+    expect(refusal).not.toBeNull();
+    expect((refusal!.after as Record<string, unknown>).memo).toBe('Backdated by somebody');
+    expect((refusal!.after as Record<string, unknown>).amountCents).toBe('100');
+
+    // And nothing was written to the ledger itself.
+    const entries = await db.journalEntry.count({
+      where: { organizationId: closeOrg.organizationId, entryDate: utc(2025, 1, 20) },
+    });
+    expect(entries).toBe(0);
+  });
+
+  it('says what stands between a month and being closed', async () => {
+    const readyOrg = await createTestOrg('Readiness');
+    const january = await findPeriodFor(readyOrg.db, readyOrg.organizationId, utc(2025, 1, 15));
+    const february = await findPeriodFor(readyOrg.db, readyOrg.organizationId, utc(2025, 2, 15));
+
+    await postJournalEntry(db, readyOrg.systemCtx, {
+      entryDate: utc(2025, 1, 20),
+      source: 'MANUAL',
+      lines: [
+        { accountCode: ACCOUNTS.BANK_OPERATING, debitCents: 2_500n },
+        { accountCode: ACCOUNTS.OWNERS_EQUITY, creditCents: 2_500n },
+      ],
+    });
+
+    const jan = await periodReadiness(db, readyOrg.systemCtx, january!.id);
+    expect(jan.entryCount).toBe(1);
+    expect(jan.postedCents).toBe(2_500n);
+    expect(jan.blockedBy).toEqual([]);
+    expect(jan.canClose).toBe(true);
+
+    // February cannot go first: a correction posted behind a closed month would silently
+    // restate a figure that has already been reported.
+    const feb = await periodReadiness(db, readyOrg.systemCtx, february!.id);
+    expect(feb.canClose).toBe(false);
+    expect(feb.blockedBy.map((row) => row.periodNumber)).toEqual([1]);
+
+    await closePeriod(db, readyOrg.systemCtx, january!.id);
+    const after = await periodReadiness(db, readyOrg.systemCtx, february!.id);
+    expect(after.canClose).toBe(true);
+
+    // A closed month is not closeable again, whatever else is true of it.
+    const janAgain = await periodReadiness(db, readyOrg.systemCtx, january!.id);
+    expect(janAgain.status).toBe('CLOSED');
+    expect(janAgain.canClose).toBe(false);
+  });
+
+  it('keeps the whole history of the lock — closes, reopenings and refusals together', async () => {
+    const trailOrg = await createTestOrg('Trail');
+    const period = await findPeriodFor(trailOrg.db, trailOrg.organizationId, utc(2025, 1, 15));
+
+    await closePeriod(db, trailOrg.systemCtx, period!.id);
+    await postJournalEntry(db, trailOrg.systemCtx, {
+      entryDate: utc(2025, 1, 20),
+      source: 'MANUAL',
+      lines: [
+        { accountCode: ACCOUNTS.BANK_OPERATING, debitCents: 100n },
+        { accountCode: ACCOUNTS.OWNERS_EQUITY, creditCents: 100n },
+      ],
+    }).catch(() => undefined);
+    await reopenPeriod(db, trailOrg.systemCtx, period!.id, 'Missed vendor bill from the 28th');
+
+    const trail = await periodAuditTrail(db, trailOrg.systemCtx);
+    const actions = trail.map((row) => row.action);
+    expect(actions).toContain('CLOSE_PERIOD');
+    expect(actions).toContain('REFUSED_POSTING');
+    expect(actions).toContain('REOPEN_PERIOD');
+
+    // Newest first, and the reason survives — it is the whole point of asking for one.
+    expect(actions[0]).toBe('REOPEN_PERIOD');
+    expect((trail[0].after as Record<string, unknown>).reason).toBe(
+      'Missed vendor bill from the 28th',
+    );
   });
 
   it('accepts postings again once the period is reopened, and audits the reopening', async () => {

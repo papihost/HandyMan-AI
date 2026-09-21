@@ -1,6 +1,7 @@
 import type { JournalSource, PrismaClient } from '@prisma/client';
 import type { Tx } from '../db';
 import {
+  ClosedPeriodError,
   ImmutableLedgerError,
   NotFoundError,
   UnbalancedEntryError,
@@ -76,8 +77,53 @@ export async function postJournalEntry(
   tx?: Tx,
 ): Promise<PostedEntry> {
   requirePermission(ctx, PERMISSIONS.GL_POST);
-  if (tx) return postWithin(tx, ctx, input);
-  return db.$transaction((t) => postWithin(t, ctx, input));
+
+  try {
+    if (tx) return await postWithin(tx, ctx, input);
+    return await db.$transaction((t) => postWithin(t, ctx, input));
+  } catch (error) {
+    if (error instanceof ClosedPeriodError) await recordRefusedPosting(db, ctx, input);
+    throw error;
+  }
+}
+
+/**
+ * Somebody tried to post into a closed month.
+ *
+ * Refusing it is half the job. The other half is that a controller finds out — a run of
+ * these is somebody backdating, and the first time anyone notices should not be the
+ * audit. Written on the base client rather than the caller's transaction, because that
+ * transaction is already doomed and the record has to survive its rollback.
+ *
+ * Logging never breaks the thing it is logging: a failure here is swallowed so the
+ * caller still sees the refusal it was going to see.
+ */
+async function recordRefusedPosting(
+  db: PrismaClient,
+  ctx: AuthContext,
+  input: PostEntryInput,
+): Promise<void> {
+  try {
+    await db.auditLog.create({
+      data: {
+        organizationId: ctx.organizationId,
+        userId: ctx.userId === 'system' ? null : ctx.userId,
+        action: 'REFUSED_POSTING',
+        entityType: 'AccountingPeriod',
+        entityId: input.entryDate.toISOString().slice(0, 10),
+        after: {
+          entryDate: input.entryDate.toISOString(),
+          source: input.source,
+          sourceType: input.sourceType ?? null,
+          sourceId: input.sourceId ?? null,
+          memo: input.memo ?? null,
+          amountCents: sum(normalizeLines(input).map((line) => line.debitCents)).toString(),
+        },
+      },
+    });
+  } catch {
+    // Nothing to do: the refusal itself is what the caller needs, and it is on its way.
+  }
 }
 
 async function postWithin(tx: Tx, ctx: AuthContext, input: PostEntryInput): Promise<PostedEntry> {

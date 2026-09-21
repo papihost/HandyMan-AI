@@ -125,16 +125,23 @@ Switch to **Diane Kowalczyk, controller**.
    made, each one linking to the job it went out on. The negative lines are worth naming
    out loud: parts consumed that were never booked in, which is a receipt somebody did not
    enter and a material cost that was estimated rather than known.
-7. **Periods** at the foot of the Financials screen: everything up to two months ago is
-   closed. A posting dated inside a closed period is refused and the attempt is logged.
+7. **Close.** The oldest month still open is waiting with what is in it — around 1,900
+   entries — and nothing outstanding, so close it. Now look at the month behind it: it will
+   not close clean, because finished jobs in it were never invoiced, which is the same
+   money the dashboard flagged in Act 4 seen from the other end. The warning does not block
+   the close; it just means nobody gets to say they were not told.
+
+   Then reopen a closed month. It asks why before it will proceed, and the reason is
+   recorded against the name of whoever gave it. **Postings the lock turned away** is the
+   panel to linger on: a posting dated into a closed month is refused, and the attempt is
+   kept. One is a mistake. A run of them from one person, always into the same month, is
+   something else.
 
 *The line:* "The field closed the job. Nobody in the office typed anything. The books are
 done."
 
-> **Not yet built, so do not promise it:** period close and reopen are engine operations
-> with an audit trail, but there is no button, so step 7 shows the state rather than
-> performing the close. Purchase orders exist in the data model and the payables engine;
-> the reorder list says what to buy but does not yet raise the PO.
+> **Not yet built, so do not promise it:** purchase orders exist in the data model and the
+> payables engine, but the reorder list says what to buy without raising the PO.
 
 ### Act 4 — "What does it tell me I don't know?" (5 min)
 The **owner dashboard** opens with four numbers and then three findings, in the order an
@@ -218,8 +225,9 @@ the product's value is that it surfaces them:
   a good share of the trucks need loading again. A handful of lines have gone negative —
   parts used that were never booked in — which is the most common real inventory fault
   there is and the thing the negative-stock report exists to surface.
-- **Older periods are closed.** Try to post into one and the system refuses, which is the
-  point of Act 3 step 6.
+- **Everything up to two months back is closed**, which leaves one month sitting ready to
+  close on screen and the one behind it carrying a reason not to — the finished jobs nobody
+  invoiced. Try to post into a closed one and the system refuses, and keeps the attempt.
 
 ### Today looks like today
 

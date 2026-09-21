@@ -166,7 +166,15 @@ export default async function FinancialsPage({
             </table>
           </Panel>
 
-          <Panel title="Periods" subtitle="A posting dated inside a closed period is refused">
+          <Panel
+            title="Periods"
+            subtitle="A posting dated inside a closed period is refused"
+            action={
+              <Link href="/office/periods" className="text-sm font-semibold" style={{ color: 'var(--seq)' }}>
+                Close a month →
+              </Link>
+            }
+          >
             <table>
               <tbody>
                 {periods.map((row) => (
