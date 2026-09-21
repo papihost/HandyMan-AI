@@ -35,7 +35,7 @@ export default async function QuotesPage() {
         totalCents: true,
         createdAt: true,
         validUntil: true,
-        presentedByTechnicianId: true,
+        presentedBy: { select: { user: { select: { firstName: true, lastName: true } } } },
         customer: { select: { companyName: true, firstName: true, lastName: true } },
         location: { select: { name: true } },
       },
@@ -52,32 +52,19 @@ export default async function QuotesPage() {
         totalCents: true,
         approvedAt: true,
         jobId: true,
-        presentedByTechnicianId: true,
+        presentedBy: { select: { user: { select: { firstName: true, lastName: true } } } },
         customer: { select: { companyName: true, firstName: true, lastName: true } },
       },
     }),
   ]);
 
-  /*
-   * Looked up rather than joined: `Quote.presentedByTechnicianId` is a bare column with no
-   * relation behind it, so Prisma cannot include it. Worth fixing in the schema — a
-   * foreign key with nothing enforcing it is a foreign key that will eventually point at
-   * another organization's technician — but not from here.
-   */
-  const technicianIds = [
-    ...new Set(
-      [...open, ...recent]
-        .map((quote) => quote.presentedByTechnicianId)
-        .filter((id): id is string => id !== null),
-    ),
-  ];
-  const technicians = await db.technician.findMany({
-    where: { id: { in: technicianIds }, organizationId: ctx.organizationId },
-    select: { id: true, user: { select: { firstName: true, lastName: true } } },
-  });
-  const presenter = new Map(
-    technicians.map((t) => [t.id, `${t.user.firstName} ${t.user.lastName}`]),
-  );
+  /** A quote raised in the office has no technician behind it, and says so. */
+  const presenterOf = (quote: {
+    presentedBy: { user: { firstName: string; lastName: string } } | null;
+  }) =>
+    quote.presentedBy
+      ? `${quote.presentedBy.user.firstName} ${quote.presentedBy.user.lastName}`
+      : 'the office';
 
   const nameOf = (customer: { companyName: string | null; firstName: string | null; lastName: string | null }) =>
     customer.companyName ?? [customer.firstName, customer.lastName].filter(Boolean).join(' ');
@@ -162,9 +149,7 @@ export default async function QuotesPage() {
                         </div>
                       </td>
                       <td className="text-sm">
-                        {(quote.presentedByTechnicianId
-                          ? presenter.get(quote.presentedByTechnicianId)
-                          : null) ?? 'the office'}
+                        {presenterOf(quote)}
                       </td>
                       <td>
                         {waiting > 30 ? (

@@ -28,6 +28,7 @@ export default async function QuotePage({ params }: { params: Promise<{ id: stri
       location: { select: { name: true } },
       job: { select: { id: true, jobNo: true, status: true } },
       signature: { select: { signerName: true, signedAt: true, kind: true } },
+      presentedBy: { select: { user: { select: { firstName: true, lastName: true } } } },
       options: {
         orderBy: { sortOrder: 'asc' },
         include: { lines: { orderBy: { sortOrder: 'asc' } } },
@@ -37,13 +38,6 @@ export default async function QuotePage({ params }: { params: Promise<{ id: stri
   if (!quote) notFound();
 
   const canSeeCost = ctx.permissions.has(PERMISSIONS.FINANCE_READ_COST);
-
-  const presenter = quote.presentedByTechnicianId
-    ? await db.technician.findFirst({
-        where: { id: quote.presentedByTechnicianId, organizationId: ctx.organizationId },
-        select: { user: { select: { firstName: true, lastName: true } } },
-      })
-    : null;
 
   const customerName =
     quote.customer.companyName ??
@@ -71,8 +65,8 @@ export default async function QuotePage({ params }: { params: Promise<{ id: stri
         <p className="text-sm" style={{ color: 'var(--ink-2)' }}>
           {customerName} · {quote.property.addressLine1}, {quote.property.city} ·{' '}
           {quote.location.name} · raised {quote.createdAt.toLocaleDateString()}
-          {presenter
-            ? ` · presented on site by ${presenter.user.firstName} ${presenter.user.lastName}`
+          {quote.presentedBy
+            ? ` · presented on site by ${quote.presentedBy.user.firstName} ${quote.presentedBy.user.lastName}`
             : ' · raised in the office'}
         </p>
         {quote.title && <p className="mt-1 font-medium">{quote.title}</p>}

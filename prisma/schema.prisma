@@ -235,6 +235,7 @@ model Technician {
   jobAssignments JobAssignment[]
   timeEntries   TimeEntry[]
   vanStock      StockLocation[]
+  quotesPresented Quote[]
 
   @@index([organizationId])
 }
@@ -661,6 +662,7 @@ model Quote {
   lead         Lead?        @relation(fields: [leadId], references: [id])
   job          Job?         @relation(fields: [jobId], references: [id])
   signature    Signature?   @relation(fields: [signatureId], references: [id])
+  presentedBy  Technician?  @relation(fields: [presentedByTechnicianId], references: [id])
 
   options QuoteOption[]
   lines   QuoteLine[]
