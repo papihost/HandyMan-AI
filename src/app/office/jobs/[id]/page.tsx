@@ -9,6 +9,15 @@ import { Bar, Flag, Money, Panel, StatTile } from '../../../../components/office
 
 export const dynamic = 'force-dynamic';
 
+const PAYMENT_METHOD: Record<string, string> = {
+  CASH: 'cash',
+  CHECK: 'cheque',
+  CARD: 'card',
+  ACH: 'bank transfer',
+  FINANCING: 'finance',
+  OTHER: 'other',
+};
+
 /**
  * A job, with what it actually made.
  *
@@ -29,6 +38,19 @@ export default async function OfficeJobPage({ params }: { params: Promise<{ id: 
       serviceType: true,
       lines: { orderBy: { sortOrder: 'asc' } },
       invoices: { orderBy: { issueDate: 'asc' } },
+      payments: {
+        orderBy: { receivedAt: 'asc' },
+        select: {
+          id: true,
+          paymentNo: true,
+          method: true,
+          amountCents: true,
+          unappliedCents: true,
+          receivedAt: true,
+          reference: true,
+          collectedBy: { select: { user: { select: { firstName: true, lastName: true } } } },
+        },
+      },
       changeOrders: true,
       photos: { select: { id: true, stage: true } },
       signatures: { select: { id: true, kind: true, signerName: true, signedAt: true } },
@@ -218,6 +240,24 @@ export default async function OfficeJobPage({ params }: { params: Promise<{ id: 
                     </td>
                     <td className="num">
                       <Money cents={invoice.totalCents} />
+                    </td>
+                  </tr>
+                ))}
+                {job.payments.map((payment) => (
+                  <tr key={payment.id}>
+                    <td>
+                      <span className="font-medium">{payment.paymentNo}</span>
+                      <div className="text-xs" style={{ color: 'var(--ink-3)' }}>
+                        {PAYMENT_METHOD[payment.method] ?? payment.method.toLowerCase()}
+                        {payment.reference ? ` ${payment.reference}` : ''}
+                        {payment.collectedBy
+                          ? ` · taken on site by ${payment.collectedBy.user.firstName} ${payment.collectedBy.user.lastName}`
+                          : ' · taken by the office'}
+                        {payment.unappliedCents > 0n ? ' · held against this job' : ''}
+                      </div>
+                    </td>
+                    <td className="num">
+                      <Money cents={payment.amountCents} />
                     </td>
                   </tr>
                 ))}

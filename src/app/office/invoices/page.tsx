@@ -7,6 +7,16 @@ import { Flag, Money, Panel, StatTile } from '../../../components/office/primiti
 
 export const dynamic = 'force-dynamic';
 
+/** How the money came in, in the words a person would use for it. */
+const METHOD_LABEL: Record<string, string> = {
+  CASH: 'cash',
+  CHECK: 'cheque',
+  CARD: 'card',
+  ACH: 'bank transfer',
+  FINANCING: 'finance',
+  OTHER: 'other',
+};
+
 /**
  * Receivables.
  *
@@ -24,6 +34,32 @@ const BUCKETS = [
 export default async function InvoicesPage() {
   const ctx = await requireContext();
   const aging = await agingReport(db, ctx);
+
+  /*
+   * Money the field has already collected that no invoice has claimed yet.
+   *
+   * It is not a receivable — it is the opposite, a liability, because the work has not
+   * been billed and the money is owed back until it is. It belongs on this screen anyway:
+   * whoever is chasing debt needs to know which of these calls has already been paid for,
+   * or they will ring a customer who settled on the doorstep last Tuesday.
+   */
+  const collected = await db.payment.findMany({
+    where: { organizationId: ctx.organizationId, isDeposit: true, unappliedCents: { gt: 0 } },
+    orderBy: { receivedAt: 'desc' },
+    take: 25,
+    select: {
+      id: true,
+      paymentNo: true,
+      method: true,
+      unappliedCents: true,
+      receivedAt: true,
+      reference: true,
+      customer: { select: { companyName: true, firstName: true, lastName: true } },
+      job: { select: { id: true, jobNo: true, title: true, status: true } },
+      collectedBy: { select: { user: { select: { firstName: true, lastName: true } } } },
+    },
+  });
+  const collectedCents = collected.reduce((total, row) => total + row.unappliedCents, 0n);
 
   const values = BUCKETS.map((bucket) => aging.buckets[bucket.key]);
   const max = Math.max(1, ...values.map(Number));
@@ -48,6 +84,63 @@ export default async function InvoicesPage() {
         />
         <StatTile label="Over 90 days" value={formatMoney(aging.buckets.over90)} tone={aging.buckets.over90 > 0n ? 'critical' : 'good'} />
       </div>
+
+      {collected.length > 0 && (
+        <Panel
+          title="Taken in the field, not yet billed"
+          subtitle={`${formatMoney(collectedCents)} collected on site against work nobody has invoiced. It is held as a customer deposit — a liability — and the invoice picks it up automatically when it is raised`}
+        >
+          <div className="overflow-x-auto">
+            <table>
+              <thead>
+                <tr>
+                  <th>Taken</th>
+                  <th>Customer</th>
+                  <th>Job</th>
+                  <th>By</th>
+                  <th>How</th>
+                  <th className="num">Held</th>
+                </tr>
+              </thead>
+              <tbody>
+                {collected.map((row) => (
+                  <tr key={row.id}>
+                    <td>{row.receivedAt.toLocaleDateString()}</td>
+                    <td>
+                      {row.customer.companyName ??
+                        [row.customer.firstName, row.customer.lastName].filter(Boolean).join(' ')}
+                    </td>
+                    <td>
+                      {row.job ? (
+                        <Link href={`/office/jobs/${row.job.id}`} style={{ color: 'var(--seq)' }}>
+                          {row.job.jobNo}
+                        </Link>
+                      ) : (
+                        <span style={{ color: 'var(--ink-3)' }}>on account</span>
+                      )}
+                      <div className="text-xs" style={{ color: 'var(--ink-3)' }}>
+                        {row.job?.title ?? '—'}
+                      </div>
+                    </td>
+                    <td className="text-sm">
+                      {row.collectedBy
+                        ? `${row.collectedBy.user.firstName} ${row.collectedBy.user.lastName}`
+                        : 'the office'}
+                    </td>
+                    <td className="text-sm">
+                      {METHOD_LABEL[row.method] ?? row.method.toLowerCase()}
+                      {row.reference ? ` ${row.reference}` : ''}
+                    </td>
+                    <td className="num font-semibold">
+                      <Money cents={row.unappliedCents} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      )}
 
       <Panel title="Ageing" subtitle="Older debt is darker">
         <table>

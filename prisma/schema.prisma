@@ -236,6 +236,7 @@ model Technician {
   timeEntries   TimeEntry[]
   vanStock      StockLocation[]
   quotesPresented Quote[]
+  paymentsCollected Payment[]
 
   @@index([organizationId])
 }
@@ -799,6 +800,7 @@ model Job {
   checklists    ChecklistInstance[]
   signatures    Signature[]
   invoices      Invoice[]
+  payments      Payment[]
   inventoryTxns InventoryTransaction[]
   journalLines  JournalLine[]
   permits       Permit[]
@@ -1548,6 +1550,13 @@ model Payment {
   unappliedCents BigInt        @default(0)
   // Deposits sit in 2300 Customer Deposits (a liability) until applied to an invoice.
   isDeposit      Boolean       @default(false)
+  /**
+   * The call the money was taken at. A payment collected on a doorstep belongs to that
+   * job before any invoice exists, which is what lets the deposit find its own invoice
+   * when the office raises it — and what makes "who was holding this cash" answerable.
+   */
+  jobId          String?
+  collectedByTechnicianId String?
   receivedAt     DateTime
   reference      String?       // check number / auth code
   // PCI: we store only the processor token and display digits. Never a PAN.
@@ -1562,6 +1571,8 @@ model Payment {
   createdAt      DateTime      @default(now())
 
   customer     Customer      @relation(fields: [customerId], references: [id])
+  job          Job?          @relation(fields: [jobId], references: [id])
+  collectedBy  Technician?   @relation(fields: [collectedByTechnicianId], references: [id])
   journalEntry JournalEntry? @relation(fields: [journalEntryId], references: [id])
   depositBatch DepositBatch? @relation(fields: [depositBatchId], references: [id])
   importBatch  ImportBatch?  @relation(fields: [importBatchId], references: [id])
@@ -1570,6 +1581,7 @@ model Payment {
 
   @@unique([organizationId, paymentNo])
   @@index([customerId])
+  @@index([jobId])
   @@index([organizationId, receivedAt])
 }
 

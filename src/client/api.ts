@@ -144,6 +144,7 @@ export interface RawJob {
   history: { jobNo: string; title: string; completedAt: string | null; isWarranty: boolean }[];
   checklistIds: string[];
   photoCount: number;
+  payments: { paymentNo: string; method: string; amountCents: string; receivedAt: string }[];
 }
 
 export interface RawPriceItem {

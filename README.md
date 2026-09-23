@@ -104,7 +104,7 @@ Resetting is safe by construction: it refuses on any organization whose `dataMod
 ## Testing
 
 ```bash
-npm test          # 317 tests: unit + integration against Postgres
+npm test          # 321 tests: unit + integration against Postgres
 npm run typecheck
 ```
 
@@ -129,7 +129,9 @@ and row locks on the document-number sequence. A mock would prove nothing about 
 - Quoting with good/better/best option sets, e-signature approval, and conversion to a job.
 - Jobs with an explicit lifecycle state machine.
 - Invoicing that posts itself to the ledger, deposits held as a liability until earned,
-  payments, and AR aging.
+  payments, and AR aging. Money collected in the field is tagged to the job and the
+  technician who took it, and the invoice, when it is raised, finds and consumes the
+  deposit taken for that work without being told about it.
 - Job costing read from the general ledger rather than from a summary table.
 - Inventory across warehouses and per-technician vans: moving-average costing under row
   locks, transfers, consumption to COGS on a job, cycle counts with shrinkage, reorder
@@ -155,7 +157,10 @@ and row locks on the document-number sequence. A mock would prove nothing about 
   IndexedDB for the day's work and queued photos, and screens for the whole visit — my day,
   the job with access notes and prior visits, parts off the van, quoting on site in
   good/better/best options priced from the book already on the device and accepted on the
-  glass, before/after photos, a change order signed on the glass, and completion.
+  glass, before/after photos, a change order signed on the glass, completion, and taking
+  the money at the door — cash and cheques queue offline because they are real the moment
+  they are handed over, while a card is refused without a processor authorization behind
+  it, on the device and again on the server.
 - The office web app. Every figure on every screen is read from posted journal lines or
   from the documents themselves — there is no summary table a report could disagree with.
   - **Dashboard** — the company's four numbers, then the findings: work nobody invoiced, a
@@ -168,7 +173,8 @@ and row locks on the document-number sequence. A mock would prove nothing about 
   - **Invoices** — what was billed, the margin on it, and how the sales tax was worked out,
     jurisdiction by jurisdiction.
   - **Journal entries**, both sides, immutable, linking back to the document that caused
-    them; **financial statements** with account drill-down; **receivables**.
+    them; **financial statements** with account drill-down; **receivables**, including the
+    money the field has already collected for work nobody has billed yet.
   - **Price book review** — every flat rate against the cost it carries, thinnest first.
   - **Inventory** — valuation against the ledger accounts it must equal, what each van is
     carrying and short of, and every movement a part has made with the job it went out on.
@@ -186,9 +192,10 @@ The full path is covered end to end by `tests/workflow.test.ts`: a quote approve
 field becomes a job, the job becomes an invoice, the invoice posts to the general ledger,
 and the margin on that job is read back off the same journal lines the P&L is built from.
 
-**Next:** nothing is blocking a demo. The obvious things after that are inbound payment
-capture from the field, a customer-facing portal, and scheduled service agreements moving
-from the data model into screens.
+**Next:** nothing is blocking a demo. The obvious things after that are a card processor
+behind the field payment flow (the flow and its ledger treatment are built; no rail is
+connected), a customer-facing portal, and scheduled service agreements moving from the
+data model into screens.
 
 ## Architecture notes
 

@@ -19,7 +19,7 @@ import { PriceBookPicker, type PickedLine } from '../../../../components/PriceBo
 import { Sheet } from '../../../../components/Sheet';
 import { SignaturePad } from '../../../../components/SignaturePad';
 
-type SheetName = 'work' | 'parts' | 'changeOrder' | 'quote' | 'complete' | null;
+type SheetName = 'work' | 'parts' | 'changeOrder' | 'quote' | 'payment' | 'complete' | null;
 
 /** Best-effort position. A technician in a plant room has no GPS and must not be blocked. */
 function currentPosition(): Promise<GeolocationCoordinates | undefined> {
@@ -120,6 +120,8 @@ export default function JobPage() {
 
       <QuoteCard onQuote={() => setSheet('quote')} />
 
+      <PaymentCard job={job} total={total} onTake={() => setSheet('payment')} />
+
       <PhotoCard
         photos={photos}
         serverCount={job.photoCount}
@@ -201,6 +203,18 @@ export default function JobPage() {
         onClose={() => setSheet(null)}
         onConfirm={async (input) => {
           await actions.createChangeOrder(job.id, input);
+          setSheet(null);
+          await reload();
+        }}
+      />
+
+      <PaymentSheet
+        open={sheet === 'payment'}
+        total={total}
+        taken={takenSoFar(job)}
+        onClose={() => setSheet(null)}
+        onConfirm={async (input) => {
+          await actions.collectPayment(job.id, input);
           setSheet(null);
           await reload();
         }}
@@ -1005,6 +1019,259 @@ function QuoteSheet({
             Leave this blank and the quote goes to the office to follow up.
           </p>
         </div>
+      </div>
+    </Sheet>
+  );
+}
+
+/** What has been collected against this call, queued payments included. */
+function takenSoFar(job: ClientJob): bigint {
+  return (job.payments ?? []).reduce((total, payment) => total + payment.amountCents, 0n);
+}
+
+const METHOD_LABEL: Record<string, string> = {
+  CASH: 'Cash',
+  CHECK: 'Cheque',
+  CARD: 'Card',
+  ACH: 'Bank transfer',
+  FINANCING: 'Finance',
+  OTHER: 'Other',
+};
+
+/**
+ * Money taken at the door.
+ *
+ * Most of a handyman shop's cash-flow problem is the gap between finishing a job and being
+ * paid for it, and the cheapest way to close that gap is to ask while you are still
+ * standing there. So this is a card of its own rather than a line in the completion sheet:
+ * it is worth interrupting for, and it is still worth offering after the job is finished,
+ * because the customer often goes to find their chequebook while the tech packs up.
+ */
+function PaymentCard({
+  job,
+  total,
+  onTake,
+}: {
+  job: ClientJob;
+  total: bigint;
+  onTake: () => void;
+}) {
+  const taken = takenSoFar(job);
+  const outstanding = total - taken;
+  /*
+   * What the office has already done with this job decides what to say here.
+   *
+   * A job the office has been paid for must not invite the technician to collect it again
+   * — the customer settled by card last week and nobody on the doorstep knows. A job that
+   * has been invoiced can still be paid in the field; it just goes against that invoice
+   * rather than sitting as money on account.
+   */
+  const settled = job.status === 'PAID' || job.status === 'CLOSED';
+  const billed = job.status === 'INVOICED';
+
+  if (settled) {
+    return (
+      <section className="card p-4">
+        <div className="flex items-baseline justify-between gap-3">
+          <h2 className="font-bold">Payment</h2>
+          <span className="text-sm text-[var(--color-ink-soft)]">{money(total)}</span>
+        </div>
+        <p className="mt-1 font-semibold text-[var(--color-go)]">Already paid for</p>
+        <p className="mt-1 text-sm text-[var(--color-ink-soft)]">
+          The office has this one settled. Do not ask again.
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="card p-4">
+      <div className="flex items-baseline justify-between gap-3">
+        <h2 className="font-bold">Payment</h2>
+        <span className="text-sm text-[var(--color-ink-soft)]">Work so far {money(total)}</span>
+      </div>
+
+      {taken > 0n && (
+        <ul className="mt-2 space-y-1 text-sm">
+          {job.payments.map((payment, index) => (
+            <li key={`${payment.paymentNo}-${index}`} className="flex justify-between gap-3">
+              <span>
+                {METHOD_LABEL[payment.method] ?? payment.method}
+                {payment.pending && (
+                  <span className="ml-2 text-[var(--color-ink-soft)]">· waiting to send</span>
+                )}
+              </span>
+              <span className="font-semibold tabular-nums">{money(payment.amountCents)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {taken > 0n && outstanding <= 0n ? (
+        <>
+          <p className="mt-2 font-semibold text-[var(--color-go)]">
+            {billed ? 'Paid in full' : 'The whole job, collected'}
+          </p>
+          {!billed && (
+            <p className="mt-1 text-sm text-[var(--color-ink-soft)]">
+              Tax goes on the invoice, so the office may still bill the difference.
+            </p>
+          )}
+        </>
+      ) : (
+        <p className="mt-2 text-sm text-[var(--color-ink-soft)]">
+          {taken > 0n
+            ? `${money(outstanding)} of the work still to collect.`
+            : 'Ask before you pack up — an invoice posted tonight is money in three weeks.'}{' '}
+          {billed
+            ? 'The office has invoiced this, so what you take goes against that invoice.'
+            : 'Tax is added when the office bills it, so anything taken here sits against this job until then.'}
+        </p>
+      )}
+
+      <button type="button" onClick={onTake} className="btn btn-quiet mt-3 w-full">
+        Take payment
+      </button>
+    </section>
+  );
+}
+
+/**
+ * Taking it.
+ *
+ * Cash and a cheque are real the moment they are in your hand, so they queue like every
+ * other operation and land when there is signal. A card is not: it is not paid until the
+ * processor says it is, and a device with no signal cannot ask. Queuing one would mean
+ * telling a customer they have paid and finding out at midnight that they have not, so the
+ * app says what it needs instead of pretending.
+ */
+function PaymentSheet({
+  open,
+  total,
+  taken,
+  onClose,
+  onConfirm,
+}: {
+  open: boolean;
+  total: bigint;
+  taken: bigint;
+  onClose: () => void;
+  onConfirm: (input: {
+    method: 'CASH' | 'CHECK' | 'CARD';
+    amountCents: bigint;
+    reference?: string;
+  }) => Promise<void>;
+}) {
+  const outstanding = total - taken > 0n ? total - taken : 0n;
+  const [method, setMethod] = useState<'CASH' | 'CHECK'>('CASH');
+  const [amount, setAmount] = useState('');
+  const [reference, setReference] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [online, setOnline] = useState(true);
+
+  useEffect(() => {
+    if (!open) return;
+    setAmount(outstanding > 0n ? (Number(outstanding) / 100).toFixed(2) : '');
+    setReference('');
+    setMethod('CASH');
+    const update = () => setOnline(navigator.onLine);
+    update();
+    window.addEventListener('online', update);
+    window.addEventListener('offline', update);
+    return () => {
+      window.removeEventListener('online', update);
+      window.removeEventListener('offline', update);
+    };
+  }, [open, outstanding]);
+
+  const cents = (() => {
+    const value = Number(amount.replace(/[^0-9.]/g, ''));
+    return Number.isFinite(value) && value > 0 ? BigInt(Math.round(value * 100)) : 0n;
+  })();
+
+  return (
+    <Sheet
+      open={open}
+      title="Take payment"
+      onClose={onClose}
+      footer={
+        <button
+          type="button"
+          disabled={busy || cents <= 0n || (method === 'CHECK' && !reference.trim())}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await onConfirm({
+                method,
+                amountCents: cents,
+                reference: reference.trim() || undefined,
+              });
+            } finally {
+              setBusy(false);
+            }
+          }}
+          className="btn btn-go w-full py-4 text-lg"
+        >
+          {cents > 0n ? `Take ${money(cents)}` : 'Enter an amount'}
+        </button>
+      }
+    >
+      <div className="space-y-4 px-5 py-4">
+        <div className="grid grid-cols-2 gap-2">
+          {(['CASH', 'CHECK'] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => setMethod(option)}
+              className={`tap rounded-xl border-2 px-4 py-4 text-lg font-semibold ${
+                method === option ? 'border-[var(--color-go)]' : ''
+              }`}
+              style={method === option ? undefined : { borderColor: 'var(--color-line)' }}
+            >
+              {METHOD_LABEL[option]}
+            </button>
+          ))}
+        </div>
+
+        <div
+          className="rounded-xl border-2 border-dashed px-4 py-3 text-sm text-[var(--color-ink-soft)]"
+          style={{ borderColor: 'var(--color-line)' }}
+        >
+          <span className="font-semibold">Card</span> —{' '}
+          {online
+            ? 'no reader is paired to this device, so a card has to go through the office.'
+            : 'a card needs the processor, and you have no signal. Take cash or a cheque, or run it when you are back in coverage.'}
+        </div>
+
+        <label className="block">
+          <span className="text-sm font-semibold">Amount</span>
+          <input
+            inputMode="decimal"
+            value={amount}
+            onChange={(event) => setAmount(event.target.value)}
+            placeholder="0.00"
+            className="mt-1 w-full rounded-xl border-2 px-4 py-3 text-2xl tabular-nums"
+            style={{ borderColor: 'var(--color-line)' }}
+          />
+        </label>
+
+        {method === 'CHECK' && (
+          <label className="block">
+            <span className="text-sm font-semibold">Cheque number</span>
+            <input
+              value={reference}
+              onChange={(event) => setReference(event.target.value)}
+              placeholder="e.g. 1184"
+              className="mt-1 w-full rounded-xl border-2 px-4 py-3 text-lg"
+              style={{ borderColor: 'var(--color-line)' }}
+            />
+          </label>
+        )}
+
+        <p className="text-sm text-[var(--color-ink-soft)]">
+          Write the receipt on the job: the office sees it the moment your queue drains, and
+          the invoice it raises already knows this money came in.
+        </p>
       </div>
     </Sheet>
   );

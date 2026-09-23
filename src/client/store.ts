@@ -16,8 +16,18 @@ import type { RawJob, RawPriceItem, RawStock } from './api';
  * than leaving the device quietly wrong.
  */
 
-export interface ClientJob extends Omit<RawJob, 'lines'> {
+export interface ClientJob extends Omit<RawJob, 'lines' | 'payments'> {
   lines: ClientJobLine[];
+  payments: ClientPayment[];
+}
+
+export interface ClientPayment {
+  paymentNo: string;
+  method: string;
+  amountCents: bigint;
+  receivedAt: string;
+  /** Taken on this device and not yet acknowledged by the server. */
+  pending?: boolean;
 }
 
 export interface ClientJobLine {
@@ -48,6 +58,11 @@ function toJob(raw: RawJob): ClientJob {
       ...line,
       unitPriceCents: BigInt(line.unitPriceCents),
       discountCents: BigInt(line.discountCents),
+    })),
+    payments: (raw.payments ?? []).map((payment) => ({
+      ...payment,
+      amountCents: BigInt(payment.amountCents),
+      pending: payment.paymentNo === 'queued',
     })),
   };
 }
@@ -317,6 +332,53 @@ export const actions = {
       blobKeys,
     );
   },
+
+  /**
+   * Money taken on the doorstep.
+   *
+   * The local copy is written optimistically like everything else, but with a difference
+   * that matters: it is marked pending until the server has it. Cash and a cheque are real
+   * the moment they are handed over, so queuing them is honest. A card is not paid until
+   * the processor says so, which is why the sheet will not offer one without signal — this
+   * layer only ever sees the token that proves it already happened.
+   */
+  collectPayment: (
+    jobId: string,
+    input: {
+      method: 'CASH' | 'CHECK' | 'CARD';
+      amountCents: bigint;
+      reference?: string;
+      processorToken?: string;
+      cardLast4?: string;
+      cardBrand?: string;
+      feeCents?: bigint;
+    },
+  ) =>
+    act(
+      'COLLECT_PAYMENT',
+      jobId,
+      {
+        method: input.method,
+        amountCents: input.amountCents.toString(),
+        reference: input.reference,
+        processorToken: input.processorToken,
+        cardLast4: input.cardLast4,
+        cardBrand: input.cardBrand,
+        feeCents: input.feeCents?.toString(),
+      },
+      (job) => ({
+        ...job,
+        payments: [
+          ...(job.payments ?? []),
+          {
+            paymentNo: 'queued',
+            method: input.method,
+            amountCents: input.amountCents.toString(),
+            receivedAt: new Date().toISOString(),
+          },
+        ],
+      }),
+    ),
 
   addNote: (jobId: string, body: string, isInternal = true) =>
     act('ADD_JOB_NOTE', jobId, { body, isInternal }, (job) => job),

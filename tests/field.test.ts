@@ -701,3 +701,166 @@ describe('quoting on site', () => {
     expect(response.results[0].outcome).not.toBe('APPLIED');
   });
 });
+
+describe('taking the money at the door', () => {
+  /** Work the technician has finished and priced, ready to be paid for. */
+  async function finishedJob(title: string, at: Date) {
+    const { job, customerId } = await makeJob({ title });
+    await pushOperations(db, techCtx, {
+      deviceId: DEVICE,
+      operations: [
+        op('JOB_STATUS', { status: 'IN_PROGRESS' }, job.id, at),
+        op('ADD_JOB_LINES', { lines: [{ priceBookItemId: laborItem, quantity: '2' }] }, job.id, at),
+      ],
+    });
+    return { job, customerId };
+  }
+
+  it('settles the receivable when the office has already invoiced the job', async () => {
+    const at = utc(2026, 7, 2);
+    const { job } = await finishedJob('Replace hose bib', at);
+
+    await transitionJob(db, admin, job.id, 'COMPLETED', { occurredAt: at });
+    const draft = await createInvoiceFromJob(db, admin, { jobId: job.id, issueDate: at });
+    const issued = await issueInvoice(db, admin, draft.id);
+    expect(issued.invoice.balanceCents).toBe(25_000n);
+
+    const response = await pushOperations(db, techCtx, {
+      deviceId: DEVICE,
+      operations: [
+        op(
+          'COLLECT_PAYMENT',
+          { method: 'CHECK', amountCents: '25000', reference: '1184' },
+          job.id,
+          at,
+        ),
+      ],
+    });
+    expect(response.applied).toBe(1);
+    expect(response.results[0].serverData?.appliedToInvoiceNo).toBe(issued.invoice.invoiceNo);
+
+    const invoice = await db.invoice.findUniqueOrThrow({ where: { id: draft.id } });
+    expect(invoice.status).toBe('PAID');
+    expect(invoice.balanceCents).toBe(0n);
+
+    const payment = await db.payment.findFirstOrThrow({ where: { jobId: job.id } });
+    // Whose hands the cheque went into is part of the record, not a guess afterwards.
+    expect(payment.collectedByTechnicianId).toBe(tech.technicianId);
+    expect(payment.reference).toBe('1184');
+    expect(payment.unappliedCents).toBe(0n);
+
+    // Cheques sit in undeposited funds until they reach the bank, so a reconciliation has
+    // something to match. The receivable is gone.
+    const tb = await trialBalance(db, admin, { from: at, to: utc(2026, 7, 31) });
+    const undeposited = tb.rows.find((r) => r.code === ACCOUNTS.UNDEPOSITED_FUNDS);
+    expect(undeposited!.balanceCents).toBe(25_000n);
+    expect(tb.isBalanced).toBe(true);
+  });
+
+  it('holds money taken before the invoice as a liability, and lets the invoice find it', async () => {
+    const at = utc(2026, 7, 8);
+    const { job, customerId } = await finishedJob('Fit bathroom fan', at);
+
+    await pushOperations(db, techCtx, {
+      deviceId: DEVICE,
+      operations: [
+        op('COLLECT_PAYMENT', { method: 'CASH', amountCents: '10000' }, job.id, at),
+      ],
+    });
+
+    const payment = await db.payment.findFirstOrThrow({ where: { jobId: job.id } });
+    expect(payment.isDeposit).toBe(true);
+    expect(payment.unappliedCents).toBe(10_000n);
+
+    // Before the work is billed the money is owed back, not earned: a liability.
+    const before = await trialBalance(db, admin, { from: at, to: at });
+    expect(before.rows.find((r) => r.code === ACCOUNTS.CUSTOMER_DEPOSITS)!.balanceCents).toBe(
+      10_000n,
+    );
+    expect(before.rows.find((r) => r.code === ACCOUNTS.AR)).toBeUndefined();
+
+    await transitionJob(db, admin, job.id, 'COMPLETED', { occurredAt: at });
+    const draft = await createInvoiceFromJob(db, admin, { jobId: job.id, issueDate: at });
+    // Nobody tells the invoice about the money: it was taken for this job, so it finds it.
+    const issued = await issueInvoice(db, admin, draft.id);
+
+    expect(issued.invoice.depositAppliedCents).toBe(10_000n);
+    expect(issued.invoice.balanceCents).toBe(15_000n);
+    expect(issued.invoice.status).toBe('OPEN');
+
+    const settled = await db.payment.findUniqueOrThrow({ where: { id: payment.id } });
+    expect(settled.unappliedCents).toBe(0n);
+
+    // The liability is discharged and only the unpaid remainder is a receivable.
+    const after = await trialBalance(db, admin, { from: at, to: utc(2026, 7, 31) });
+    expect(after.rows.find((r) => r.code === ACCOUNTS.CUSTOMER_DEPOSITS)?.balanceCents ?? 0n).toBe(
+      0n,
+    );
+    expect(after.rows.find((r) => r.code === ACCOUNTS.AR)!.balanceCents).toBe(15_000n);
+    expect(after.isBalanced).toBe(true);
+    void customerId;
+  });
+
+  it('refuses a card with no authorization behind it', async () => {
+    const at = utc(2026, 7, 14);
+    const { job } = await finishedJob('Repair gate latch', at);
+
+    const response = await pushOperations(db, techCtx, {
+      deviceId: DEVICE,
+      operations: [
+        op('COLLECT_PAYMENT', { method: 'CARD', amountCents: '25000' }, job.id, at),
+      ],
+    });
+
+    expect(response.results[0].outcome).toBe('REJECTED');
+    expect(response.results[0].message).toMatch(/needs signal/);
+    expect(await db.payment.count({ where: { jobId: job.id } })).toBe(0);
+
+    // With the processor's token in hand — which a device can only have when it is
+    // online — the same payment goes through, and card money waits in clearing rather
+    // than pretending to be in the bank.
+    const ok = await pushOperations(db, techCtx, {
+      deviceId: DEVICE,
+      operations: [
+        op(
+          'COLLECT_PAYMENT',
+          {
+            method: 'CARD',
+            amountCents: '25000',
+            processorToken: 'tok_3nR2v9',
+            cardLast4: '4242',
+            cardBrand: 'Visa',
+            feeCents: '750',
+          },
+          job.id,
+          at,
+        ),
+      ],
+    });
+    expect(ok.applied).toBe(1);
+
+    const payment = await db.payment.findFirstOrThrow({ where: { jobId: job.id } });
+    expect(payment.cardLast4).toBe('4242');
+    expect(payment.processorToken).toBe('tok_3nR2v9');
+
+    // The processor keeps its cut at capture: clearing holds what will actually land, and
+    // the fee is an expense now rather than a quietly smaller sale later.
+    const tb = await trialBalance(db, admin, { from: at, to: at });
+    expect(tb.rows.find((r) => r.code === ACCOUNTS.CARD_CLEARING)!.balanceCents).toBe(24_250n);
+    expect(tb.rows.find((r) => r.code === ACCOUNTS.MERCHANT_FEES)!.balanceCents).toBe(750n);
+    expect(tb.isBalanced).toBe(true);
+  });
+
+  it('does not take the money twice when the response is lost', async () => {
+    const at = utc(2026, 7, 21);
+    const { job } = await finishedJob('Patch stucco', at);
+    const payment = op('COLLECT_PAYMENT', { method: 'CASH', amountCents: '25000' }, job.id, at);
+
+    const first = await pushOperations(db, techCtx, { deviceId: DEVICE, operations: [payment] });
+    const retry = await pushOperations(db, techCtx, { deviceId: DEVICE, operations: [payment] });
+
+    expect(first.results[0].outcome).toBe('APPLIED');
+    expect(retry.results[0].outcome).toBe('DUPLICATE');
+    expect(await db.payment.count({ where: { jobId: job.id } })).toBe(1);
+  });
+});

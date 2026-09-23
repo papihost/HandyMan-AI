@@ -202,18 +202,34 @@ export async function issueInvoice(
       throw new ValidationError(`Invoice ${invoice.invoiceNo} has already been issued`);
     }
 
-    const depositToApply = options.applyDepositCents ?? ZERO;
-    if (depositToApply > ZERO) {
+    const asked = options.applyDepositCents ?? ZERO;
+    if (asked > ZERO) {
       const available = await unappliedDepositTotal(tx, ctx.organizationId, invoice.customerId);
-      if (depositToApply > available) {
+      if (asked > available) {
         throw new ValidationError(
-          `Only ${available} of customer deposit is unapplied; cannot apply ${depositToApply}`,
+          `Only ${available} of customer deposit is unapplied; cannot apply ${asked}`,
         );
       }
-      if (depositToApply > invoice.totalCents) {
+      if (asked > invoice.totalCents) {
         throw new ValidationError('Applied deposit exceeds the invoice total');
       }
     }
+
+    /*
+     * Money already taken for this job finds its own invoice, without being asked to.
+     *
+     * A deposit is a liability held against work that has not been billed. The moment it
+     * is billed, leaving it standing would report a customer who owes the full amount and
+     * a business that owes them the money back — both wrong, and wrong in opposite
+     * directions, so the balance sheet still ties and nobody notices. A deposit taken for
+     * a different job stays where it is: the office applies that one deliberately.
+     */
+    const jobDeposits = invoice.jobId
+      ? await unappliedDepositTotalForJob(tx, ctx.organizationId, invoice.jobId)
+      : ZERO;
+    const room = invoice.totalCents - asked;
+    const fromThisJob = jobDeposits < room ? jobDeposits : room > ZERO ? room : ZERO;
+    const depositToApply = asked + fromThisJob;
 
     const serviceTypeId = invoice.job?.serviceTypeId ?? null;
 
@@ -260,7 +276,7 @@ export async function issueInvoice(
     );
 
     if (depositToApply > ZERO) {
-      await consumeDeposits(tx, ctx.organizationId, invoice.customerId, depositToApply);
+      await consumeDeposits(tx, ctx.organizationId, invoice.customerId, depositToApply, invoice.jobId);
     }
 
     const updated = await tx.invoice.update({
@@ -317,6 +333,10 @@ export interface RecordPaymentInput {
   isDeposit?: boolean;
   /** Invoices to settle, oldest first when omitted. */
   invoiceId?: string;
+  /** The call it was taken at. Required for money collected in the field. */
+  jobId?: string;
+  /** Whose hands it went into. */
+  collectedByTechnicianId?: string;
 }
 
 /**
@@ -343,6 +363,18 @@ export async function recordPayment(
     });
     if (!customer) throw new NotFoundError('Customer', input.customerId);
 
+    if (input.jobId) {
+      const job = await tx.job.findFirst({
+        where: { id: input.jobId, organizationId: ctx.organizationId },
+        select: { id: true, jobNo: true, customerId: true },
+      });
+      if (!job) throw new NotFoundError('Job', input.jobId);
+      // Money taken at one customer's door cannot be booked against another's job.
+      if (job.customerId !== input.customerId) {
+        throw new ValidationError(`Job ${job.jobNo} belongs to a different customer`);
+      }
+    }
+
     const receivedAt = input.receivedAt ?? new Date();
     const isDeposit = input.isDeposit ?? false;
     const paymentNo = await nextDocumentNumber(tx, ctx.organizationId, 'PAYMENT');
@@ -363,6 +395,8 @@ export async function recordPayment(
         isDeposit,
         receivedAt,
         reference: input.reference ?? null,
+        jobId: input.jobId ?? null,
+        collectedByTechnicianId: input.collectedByTechnicianId ?? null,
         feeCents: input.feeCents ?? ZERO,
         // Only the processor's token and the display digits. Never a card number.
         processorToken: input.processorToken ?? null,
@@ -384,6 +418,7 @@ export async function recordPayment(
           paymentNo,
           locationId: input.locationId,
           customerId: input.customerId,
+          jobId: input.jobId,
           method: input.method,
           amountCents: input.amountCents,
           feeCents: input.feeCents,
@@ -432,6 +467,18 @@ export async function recordPayment(
       data: { unappliedCents: remaining, journalEntryId: entry.id },
     });
 
+    /*
+     * A payment against a job is a change to that job as far as a tablet is concerned.
+     *
+     * Devices pull what has changed since they last asked, by the job's own timestamp, and
+     * nothing else here touches it. Without this the technician who took the cheque keeps
+     * showing it as unsent for the rest of the day, and the next technician at the same
+     * address is not told it was paid at all.
+     */
+    if (input.jobId) {
+      await tx.job.update({ where: { id: input.jobId }, data: { updatedAt: new Date() } });
+    }
+
     return { payment: settled, journalEntryId: entry.id, unappliedCents: remaining };
   });
 }
@@ -476,20 +523,43 @@ async function unappliedDepositTotal(
   return sum(deposits.map((d) => d.unappliedCents));
 }
 
-/** Draw down deposit payments oldest first, mirroring how the liability was built up. */
+async function unappliedDepositTotalForJob(
+  tx: TxLike,
+  organizationId: string,
+  jobId: string,
+): Promise<Cents> {
+  const deposits = await tx.payment.findMany({
+    where: { organizationId, jobId, isDeposit: true, unappliedCents: { gt: 0 } },
+    select: { unappliedCents: true },
+  });
+  return sum(deposits.map((d) => d.unappliedCents));
+}
+
+/**
+ * Draw down deposit payments oldest first, mirroring how the liability was built up —
+ * except that the invoice's own job goes first, so the money taken for this work is the
+ * money this work consumes rather than an older deposit being raided for it.
+ */
 async function consumeDeposits(
   tx: TxLike,
   organizationId: string,
   customerId: string,
   amount: Cents,
+  preferJobId?: string | null,
 ): Promise<void> {
   let remaining = amount;
 
-  const deposits = await tx.payment.findMany({
+  const found = await tx.payment.findMany({
     where: { organizationId, customerId, isDeposit: true, unappliedCents: { gt: 0 } },
     orderBy: { receivedAt: 'asc' },
-    select: { id: true, unappliedCents: true },
+    select: { id: true, unappliedCents: true, jobId: true },
   });
+  const deposits = preferJobId
+    ? [
+        ...found.filter((d) => d.jobId === preferJobId),
+        ...found.filter((d) => d.jobId !== preferJobId),
+      ]
+    : found;
 
   for (const deposit of deposits) {
     if (remaining <= ZERO) break;

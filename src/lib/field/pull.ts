@@ -82,6 +82,11 @@ export interface FieldJob {
   history: { jobNo: string; title: string; completedAt: Date | null; isWarranty: boolean }[];
   checklistIds: string[];
   photoCount: number;
+  /**
+   * What has already been collected for this call. A technician who cannot see that the
+   * customer paid the deposit last week will ask for it again on the doorstep.
+   */
+  payments: { paymentNo: string; method: string; amountCents: bigint; receivedAt: Date }[];
 }
 
 export interface FieldJobLine {
@@ -224,6 +229,10 @@ export async function pullFieldData(
         },
       },
       checklists: { select: { id: true } },
+      payments: {
+        orderBy: { receivedAt: 'asc' },
+        select: { paymentNo: true, method: true, amountCents: true, receivedAt: true },
+      },
       _count: { select: { photos: true } },
     },
   });
@@ -308,6 +317,7 @@ export async function pullFieldData(
     history: (historyByProperty.get(job.property.id) ?? []).filter((h) => h.jobNo !== job.jobNo),
     checklistIds: job.checklists.map((c) => c.id),
     photoCount: job._count.photos,
+    payments: job.payments,
   }));
 
   // The whole price book goes down, not just what today's jobs need: the work a tech finds

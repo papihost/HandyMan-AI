@@ -1183,6 +1183,33 @@ async function seedOneJob(
 
   // ------------------------------------------------- bill and collect
   if (input.leaveUnbilled) {
+    /*
+     * Some of the work nobody invoiced was paid for anyway.
+     *
+     * The technician was standing there and asked, so the money is in the bank while the
+     * paperwork is still nowhere. It sits as a deposit against the job — a liability,
+     * because the work has not been billed — and it is the most uncomfortable figure on
+     * the receivables screen: cash the company is holding for work it has not charged for.
+     */
+    if (rng.bool(0.38)) {
+      const worked = await db.jobLine.aggregate({
+        where: { jobId },
+        _sum: { totalCents: true },
+      });
+      const takenCents = worked._sum.totalCents ?? 0n;
+      if (takenCents > 0n) {
+        await recordPayment(db, ctx, {
+          customerId: input.customerId,
+          locationId: input.locationId,
+          jobId,
+          collectedByTechnicianId: tech.technicianId,
+          method: rng.weighted([['CHECK', 52], ['CASH', 48]] as const),
+          amountCents: takenCents,
+          receivedAt: workDate,
+          isDeposit: true,
+        });
+      }
+    }
     return { jobId, completed: true, hours: Number(actualHours) };
   }
 
@@ -1212,12 +1239,23 @@ async function seedOneJob(
         );
 
     if (paidAt <= new Date()) {
-      const method = rng.weighted([
-        ['CARD', 62],
-        ['CHECK', 22],
-        ['ACH', 12],
-        ['CASH', 4],
-      ] as const);
+      /*
+       * Who took the money decides how it was taken. Nobody pays by bank transfer on a
+       * doorstep, and nobody hands cash to the office three weeks later.
+       */
+      const onSite = paidImmediately && rng.bool(0.55);
+      const method = onSite
+        ? rng.weighted([
+            ['CARD', 44],
+            ['CHECK', 34],
+            ['CASH', 22],
+          ] as const)
+        : rng.weighted([
+            ['CARD', 62],
+            ['CHECK', 22],
+            ['ACH', 12],
+            ['CASH', 4],
+          ] as const);
       // Card processing runs about 2.9% plus thirty cents.
       const fee =
         method === 'CARD'
@@ -1232,6 +1270,7 @@ async function seedOneJob(
         feeCents: fee,
         receivedAt: paidAt,
         invoiceId: invoice.id,
+        ...(onSite ? { jobId, collectedByTechnicianId: tech.technicianId } : {}),
         ...(method === 'CARD'
           ? { cardLast4: String(rng.int(1000, 9999)), cardBrand: rng.pick(['visa', 'mastercard', 'amex']) }
           : {}),
@@ -1307,7 +1346,13 @@ async function postMonthEnd(db: PrismaClient, ctx: AuthContext, input: MonthEndI
   if (clearing > 0n) {
     // The processor holds a few days' takings back, so the sweep is not quite complete —
     // which is exactly the sort of timing difference a bank reconciliation exists for.
-    const settled = (clearing * 94n) / 100n;
+    //
+    // The holdback compounds down in a quiet month: six percent of six percent, and so on,
+    // until what is left is pennies and 94% of it rounds to nothing. A processor does not
+    // sit on a penny for ever, so once the holdback rounds away the residue goes over
+    // whole — which also keeps the ledger from being asked to post a zero.
+    const holdback = (clearing * 94n) / 100n;
+    const settled = holdback > 0n ? holdback : clearing;
     await postJournalEntry(db, ctx, {
       entryDate,
       source: 'PAYMENT',

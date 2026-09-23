@@ -33,6 +33,7 @@ export type FieldOperationType =
   | 'CAPTURE_SIGNATURE'
   | 'CREATE_CHANGE_ORDER'
   | 'CREATE_QUOTE'
+  | 'COLLECT_PAYMENT'
   | 'COMPLETE_CHECKLIST'
   | 'ADD_JOB_NOTE';
 
@@ -666,6 +667,95 @@ const createQuote: Handler = async (handler) => {
   };
 };
 
+// ---------------------------------------------------------------- payment
+
+/**
+ * Money taken at the door.
+ *
+ * Cash and cheques queue like everything else: the notes are in the technician's pocket
+ * whether or not there is signal, so refusing to record that would lose the only record
+ * there is. A card is different and must be treated differently — an authorization needs
+ * the processor, and a device with no signal cannot have one. The rule that enforces it is
+ * the token: no processor token, no card payment, which is exactly the state an offline
+ * device is in. Queuing a card payment that says "paid" and finding out at midnight that
+ * it was declined is how a shop ends up chasing a customer who believes they have paid.
+ *
+ * Where the money lands depends on whether the work has been billed yet. Against an issued
+ * invoice it settles the receivable. Before one exists it is a deposit — a liability, not
+ * revenue — tagged to the job, and the invoice picks it up when the office raises it.
+ */
+const collectPayment: Handler = async (handler) => {
+  const job = await loadTargetJob(handler, { allowBilled: true });
+  const { db, ctx, technicianId, occurredAt, operation } = handler;
+  const payload = operation.payload;
+
+  const method = String(payload.method ?? '').toUpperCase();
+  if (method !== 'CASH' && method !== 'CHECK' && method !== 'CARD') {
+    throw new ValidationError('A payment needs a method: cash, cheque or card');
+  }
+
+  const amountCents = amountFrom(payload.amountCents);
+  if (amountCents <= ZERO) throw new ValidationError('A payment needs an amount');
+
+  const processorToken = payload.processorToken ? String(payload.processorToken) : undefined;
+  if (method === 'CARD' && !processorToken) {
+    throw new ValidationError(
+      'A card has to be authorized by the processor, which needs signal. Take cash or a cheque, or run the card when you are back in coverage.',
+    );
+  }
+
+  const target = await db.job.findUniqueOrThrow({
+    where: { id: job.id },
+    select: { customerId: true, locationId: true },
+  });
+
+  // The job's own invoice, if the office has already raised one.
+  const invoice = await db.invoice.findFirst({
+    where: {
+      organizationId: ctx.organizationId,
+      jobId: job.id,
+      status: { in: ['OPEN', 'PARTIALLY_PAID', 'OVERDUE'] },
+      balanceCents: { gt: 0 },
+    },
+    orderBy: { issueDate: 'asc' },
+    select: { id: true, invoiceNo: true, balanceCents: true },
+  });
+
+  const { recordPayment } = await import('../invoices/service');
+
+  const result = await recordPayment(db, ctx, {
+    customerId: target.customerId,
+    locationId: target.locationId,
+    jobId: job.id,
+    collectedByTechnicianId: technicianId,
+    method,
+    amountCents,
+    receivedAt: occurredAt,
+    reference: payload.reference ? String(payload.reference) : undefined,
+    cardLast4: payload.cardLast4 ? String(payload.cardLast4) : undefined,
+    cardBrand: payload.cardBrand ? String(payload.cardBrand) : undefined,
+    // What the processor kept. It is an expense at capture, not a smaller sale.
+    feeCents: payload.feeCents ? amountFrom(payload.feeCents) : undefined,
+    processorToken,
+    isDeposit: !invoice,
+    invoiceId: invoice?.id,
+  });
+
+  return {
+    entityId: result.payment.id,
+    serverData: {
+      paymentNo: result.payment.paymentNo,
+      amountCents: result.payment.amountCents.toString(),
+      appliedToInvoiceNo: invoice?.invoiceNo ?? null,
+      heldAsDeposit: !invoice,
+      receivedAt: occurredAt.toISOString(),
+    },
+    message: invoice
+      ? `Payment ${result.payment.paymentNo} against invoice ${invoice.invoiceNo}`
+      : `Payment ${result.payment.paymentNo} held against this job until it is invoiced`,
+  };
+};
+
 export const HANDLERS: Record<FieldOperationType, Handler> = {
   JOB_STATUS: jobStatus,
   CLOCK_IN: clockIn,
@@ -676,6 +766,7 @@ export const HANDLERS: Record<FieldOperationType, Handler> = {
   CAPTURE_SIGNATURE: captureSignature,
   CREATE_CHANGE_ORDER: createChangeOrder,
   CREATE_QUOTE: createQuote,
+  COLLECT_PAYMENT: collectPayment,
   COMPLETE_CHECKLIST: completeChecklist,
   ADD_JOB_NOTE: addJobNote,
 };

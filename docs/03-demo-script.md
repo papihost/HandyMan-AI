@@ -84,12 +84,23 @@ Switch to a phone-sized window, logged in as **Marcus Deleon, technician, Mesa**
    plainly what just happened: a technician who cannot approve a quote, and must never be
    able to, just had one approved — the authority is the signature, not the badge.
 7. Before and after photos, by stage. Then **Finish job** and the completion signature.
-8. **Reload the page, still offline.** The queue is still there — it is IndexedDB, not React
+8. **Ask for the money before you pack up.** **Take payment** — cash or a cheque, with the
+   cheque number — for the work total, still with the network off. Cash and a cheque are
+   real the moment they are in your hand, so they queue like everything else. A card is
+   not: the panel says so plainly rather than pretending, because a queued card payment
+   that declines at midnight means a customer who believes they have paid and a shop that
+   has not been paid. The server enforces the same rule — no processor authorization, no
+   card payment — which is exactly the state an offline device is in.
+
+   What this is worth saying out loud: the gap between finishing a job and being paid for
+   it is most of a shop's cash-flow problem, and the cheapest way to close it is to ask
+   while somebody is still standing in the kitchen.
+9. **Reload the page, still offline.** The queue is still there — it is IndexedDB, not React
    state — so a tablet that sleeps, or a browser that reaps the tab, loses nothing.
-9. **Turn the network back on.** The outbox drains in order and the banner returns to
+10. **Turn the network back on.** The outbox drains in order and the banner returns to
    "All saved". The quote is in the office before he is back in the van — **Quotes** shows
    it accepted, with his name against it as the person who presented it.
-10. Note what he *cannot* see: no cost, no margin, no other techs' jobs. Open the network tab
+11. Note what he *cannot* see: no cost, no margin, no other techs' jobs. Open the network tab
    and look at the pull payload — 43KB, and the words `costCents`, `unitCostCents` and
    `loadedHourly` do not appear in it. The cost fields are not hidden on the client; they
    are not sent.
@@ -99,7 +110,9 @@ front of it, and never see your margins."
 
 > **Not yet built, so do not promise it:** there is no camera-driven quoting and no AI
 > drafting. The technician picks the lines from the price book. If they ask whether a photo
-> can write the quote, that is a roadmap answer.
+> can write the quote, that is a roadmap answer. No card processor is connected either, so
+> a card is taken by the office rather than on a reader in the van — the field flow and the
+> ledger treatment are built, the rail is not.
 
 ### Act 3 — "Are the books right?" (8 min)
 Switch to **Diane Kowalczyk, controller**.
@@ -111,6 +124,13 @@ Switch to **Diane Kowalczyk, controller**.
    Then **View journal entry**: receivable, labour revenue, materials revenue and sales tax,
    posted by the invoice rather than by anybody typing. The entry links back to the invoice,
    so the trip runs both ways.
+
+   Stay on the receivables screen for one more beat: **taken in the field, not yet billed**
+   — money the technicians collected on doorsteps for work nobody has invoiced. It is not
+   a receivable, it is the opposite: a liability, because the work has not been charged for
+   and the money is owed back until it is. Most field software books it as revenue the day
+   it arrives. When the office does raise one of those invoices, the deposit applies itself
+   — nobody has to remember that the cash came in three weeks ago on a different screen.
 2. **Jobs → a completed job.** Revenue, cost and margin, all read from posted journal lines
    rather than from a cached column.
 3. **What it cost**, broken out: direct labour with the hours and the wage behind it, labour
