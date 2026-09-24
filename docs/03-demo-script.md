@@ -191,7 +191,16 @@ in revenue.
 
 1. **Money on the table.** A handful of finished jobs were never invoiced — the callout
    names the count and how long the oldest has been waiting, which lands around a month.
-   One click to the list, one click to bill them.
+   One click to the list, and then bill them: **Bill it** on a row, or **Bill all** for the
+   lot, which asks how many and how much before it does anything, because one press issues
+   an invoice per job and posts every one to the ledger.
+
+   Bill a row that says *already in* against it — one of the jobs a technician collected
+   for on the doorstep. The invoice comes back reading *190.00 already collected · 15.30 to
+   collect*: the deposit found its own invoice, and what is left is the sales tax that was
+   never going to be in the cash the customer handed over. Then go back to the dashboard
+   and watch the finding disappear, because it was never a stored number — it is a question
+   asked of the jobs table every time the page loads.
 2. **A price that stopped moving.** *Drywall patch — small* returns about 8% over its
    standard cost, on 369 calls; Scottsdale sells it at under 1%, because a branch override
    set in 2023 is still in force. Follow the callout into **Price book review**: every flat

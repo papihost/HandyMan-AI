@@ -576,6 +576,100 @@ async function consumeDeposits(
   }
 }
 
+export interface BillJobResult {
+  jobId: string;
+  jobNo: string;
+  invoiceId?: string;
+  invoiceNo?: string;
+  totalCents?: Cents;
+  /** Money already collected for this job, consumed by the invoice as it was issued. */
+  depositAppliedCents?: Cents;
+  balanceCents?: Cents;
+  /** Why this one was not billed. The rest of a batch carries on regardless. */
+  error?: string;
+}
+
+/**
+ * Bill one finished job.
+ *
+ * Drafting and issuing are two steps in the engine because progress billing needs them to
+ * be: a draft can claim some of the lines and leave the rest. The overwhelmingly common
+ * case is neither — the work is done, all of it is billable, and somebody wants it out of
+ * the door — so this is that case with one call, and it is the call the office screens
+ * make.
+ */
+export async function billJob(
+  db: PrismaClient,
+  ctx: AuthContext,
+  jobId: string,
+  options: { issueDate?: Date } = {},
+): Promise<BillJobResult> {
+  requirePermission(ctx, PERMISSIONS.INVOICE_WRITE);
+
+  const job = await db.job.findFirst({
+    where: { id: jobId, organizationId: ctx.organizationId },
+    select: { id: true, jobNo: true, status: true },
+  });
+  if (!job) throw new NotFoundError('Job', jobId);
+
+  const draft = await createInvoiceFromJob(db, ctx, { jobId, issueDate: options.issueDate });
+  const issued = await issueInvoice(db, ctx, draft.id);
+
+  return {
+    jobId: job.id,
+    jobNo: job.jobNo,
+    invoiceId: issued.invoice.id,
+    invoiceNo: issued.invoice.invoiceNo,
+    totalCents: issued.invoice.totalCents,
+    depositAppliedCents: issued.invoice.depositAppliedCents,
+    balanceCents: issued.invoice.balanceCents,
+  };
+}
+
+/**
+ * Bill a batch of them.
+ *
+ * One job that cannot be billed must not strand the other thirty: a warranty callback, a
+ * job somebody already invoiced by hand, a job whose lines were all claimed by a progress
+ * invoice — each is an ordinary thing to find in a list of finished work, and each is
+ * reported against its own row rather than thrown. They are billed one at a time and in
+ * order, because the invoice numbers a customer sees should follow the order the work was
+ * finished in, not the order a database happened to return.
+ */
+export async function billJobs(
+  db: PrismaClient,
+  ctx: AuthContext,
+  jobIds: string[],
+  options: { issueDate?: Date } = {},
+): Promise<{ results: BillJobResult[]; billedCount: number; totalCents: Cents }> {
+  requirePermission(ctx, PERMISSIONS.INVOICE_WRITE);
+
+  const results: BillJobResult[] = [];
+
+  for (const jobId of jobIds) {
+    try {
+      results.push(await billJob(db, ctx, jobId, options));
+    } catch (error) {
+      const job = await db.job.findFirst({
+        where: { id: jobId, organizationId: ctx.organizationId },
+        select: { jobNo: true },
+      });
+      results.push({
+        jobId,
+        jobNo: job?.jobNo ?? jobId,
+        error: error instanceof Error ? error.message : 'Could not be billed',
+      });
+    }
+  }
+
+  const billed = results.filter((row) => row.invoiceId);
+  return {
+    results,
+    billedCount: billed.length,
+    totalCents: sum(billed.map((row) => row.totalCents ?? ZERO)),
+  };
+}
+
 /** AR aging, straight off invoice balances. */
 export async function agingReport(db: PrismaClient, ctx: AuthContext, asOf = new Date()) {
   requirePermission(ctx, PERMISSIONS.INVOICE_READ);

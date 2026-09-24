@@ -372,6 +372,12 @@ export async function unbilledCompletedJobs(db: PrismaClient, ctx: AuthContext) 
       location: { select: { name: true } },
       customer: { select: { companyName: true, firstName: true, lastName: true } },
       lines: { select: { totalCents: true } },
+      // Money the field already took for this work. Whoever bills it should know before
+      // they pick up the phone about it, and the invoice will consume it on its way out.
+      payments: {
+        where: { isDeposit: true, unappliedCents: { gt: 0 } },
+        select: { unappliedCents: true },
+      },
     },
   });
 
@@ -385,6 +391,7 @@ export async function unbilledCompletedJobs(db: PrismaClient, ctx: AuthContext) 
       job.customer.companyName ??
       [job.customer.firstName, job.customer.lastName].filter(Boolean).join(' '),
     valueCents: sum(job.lines.map((line) => line.totalCents)),
+    collectedCents: sum(job.payments.map((payment) => payment.unappliedCents)),
     daysWaiting: job.completedAt
       ? Math.floor((Date.now() - job.completedAt.getTime()) / 86_400_000)
       : 0,

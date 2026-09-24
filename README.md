@@ -104,7 +104,7 @@ Resetting is safe by construction: it refuses on any organization whose `dataMod
 ## Testing
 
 ```bash
-npm test          # 321 tests: unit + integration against Postgres
+npm test          # 324 tests: unit + integration against Postgres
 npm run typecheck
 ```
 
@@ -165,7 +165,9 @@ and row locks on the document-number sequence. A mock would prove nothing about 
   from the documents themselves — there is no summary table a report could disagree with.
   - **Dashboard** — the company's four numbers, then the findings: work nobody invoiced, a
     flat rate priced under what it costs, a branch whose margin goes on hours that never
-    reached a job.
+    reached a job. The first of those is actionable from where it is found: bill one job or
+    the whole list, with what the field already collected against it shown before you do
+    and consumed by the invoice as it is issued.
   - **Dispatch**, and **jobs** with ledger-backed costing that drills into the entries the
     job posted, and states what an hour of that technician's time actually costs.
   - **Quotes** — what is still out there, what it is worth, and a close rate measured

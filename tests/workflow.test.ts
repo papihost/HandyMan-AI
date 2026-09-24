@@ -11,14 +11,23 @@ import { createCustomer, findDuplicates } from '../src/lib/customers/service';
 import { jobCosting } from '../src/lib/jobs/costing';
 import { addJobLine, canTransition, transitionJob } from '../src/lib/jobs/service';
 import { approveQuote, convertQuoteToJob, createQuote, sendQuote } from '../src/lib/quotes/service';
-import { agingReport, createInvoiceFromJob, issueInvoice, recordPayment } from '../src/lib/invoices/service';
+import {
+  agingReport,
+  billJob,
+  billJobs,
+  createInvoiceFromJob,
+  issueInvoice,
+  recordPayment,
+} from '../src/lib/invoices/service';
 import {
   createPriceBookItem,
   createTaxJurisdiction,
+  createTestJob,
   createTestOrg,
   createTestTechnician,
   createTestUser,
   setPropertyJurisdiction,
+  utc,
   type TestOrg,
 } from './factory';
 
@@ -697,5 +706,117 @@ describe('receivables', () => {
     expect(aging.totalCents).toBe(15000n);
     expect(aging.buckets.days60).toBe(15000n); // 36 days past a same-day due date
     expect(aging.buckets.current).toBe(0n);
+  });
+});
+
+describe('billing the work that is finished', () => {
+  /** A completed job with one line on it, priced and waiting to be invoiced. */
+  async function finished(org: TestOrg, ctx: AuthContext, item: string, title: string) {
+    const job = await createTestJob(org.organizationId, org.locationId, title);
+    await addJobLine(db, ctx, job.jobId, { priceBookItemId: item, quantity: '1' });
+    await transitionJob(db, ctx, job.jobId, 'SCHEDULED');
+    await transitionJob(db, ctx, job.jobId, 'IN_PROGRESS');
+    await transitionJob(db, ctx, job.jobId, 'COMPLETED');
+    return job;
+  }
+
+  it('bills one job in a single call and consumes what the field already collected', async () => {
+    const org = await createTestOrg('Billing');
+    const ctx = systemContext(org.organizationId);
+    const item = await createPriceBookItem(org.organizationId, {
+      name: 'Fence repair',
+      category: 'LABOR',
+      costCents: 4_000n,
+      priceCents: 30_000n,
+    });
+
+    const job = await finished(org, ctx, item, 'Repair side gate');
+
+    // The technician was handed a cheque on the doorstep before anyone raised an invoice.
+    await recordPayment(db, ctx, {
+      customerId: job.customerId,
+      locationId: org.locationId,
+      jobId: job.jobId,
+      method: 'CHECK',
+      amountCents: 20_000n,
+      isDeposit: true,
+      receivedAt: utc(2026, 3, 2),
+    });
+
+    const result = await billJob(db, ctx, job.jobId, { issueDate: utc(2026, 3, 5) });
+
+    expect(result.invoiceNo).toMatch(/^INV-/);
+    expect(result.totalCents).toBe(30_000n);
+    expect(result.depositAppliedCents).toBe(20_000n);
+    expect(result.balanceCents).toBe(10_000n);
+
+    // Issued, not left as a draft: the job has moved on and the ledger has the entry.
+    const invoice = await db.invoice.findUniqueOrThrow({ where: { id: result.invoiceId! } });
+    expect(invoice.status).toBe('OPEN');
+    expect(invoice.journalEntryId).not.toBeNull();
+    const after = await db.job.findUniqueOrThrow({ where: { id: job.jobId } });
+    expect(after.status).toBe('INVOICED');
+  });
+
+  it('bills a batch and reports the ones it could not, without stranding the rest', async () => {
+    const org = await createTestOrg('BillingBatch');
+    const ctx = systemContext(org.organizationId);
+    const item = await createPriceBookItem(org.organizationId, {
+      name: 'Door adjustment',
+      category: 'LABOR',
+      costCents: 3_000n,
+      priceCents: 18_000n,
+    });
+
+    const first = await finished(org, ctx, item, 'Adjust front door');
+    const second = await finished(org, ctx, item, 'Adjust back door');
+
+    // A warranty callback is finished work that nobody may bill, and it sits in the same
+    // list as everything else.
+    const warranty = await finished(org, ctx, item, 'Callback — door binding again');
+    await db.job.update({
+      where: { id: warranty.jobId },
+      data: { isWarranty: true, isBillable: false },
+    });
+
+    const batch = await billJobs(db, ctx, [first.jobId, warranty.jobId, second.jobId], {
+      issueDate: utc(2026, 3, 9),
+    });
+
+    expect(batch.billedCount).toBe(2);
+    expect(batch.totalCents).toBe(36_000n);
+
+    const refused = batch.results.find((row) => row.error);
+    expect(refused!.jobId).toBe(warranty.jobId);
+    expect(refused!.error).toMatch(/warranty rework/);
+
+    // The two that could be billed were, and in the order they were given.
+    const billed = batch.results.filter((row) => row.invoiceNo).map((row) => row.invoiceNo!);
+    expect(billed.length).toBe(2);
+    expect(billed[0] < billed[1]).toBe(true);
+
+    // And the refused job is still there, still finished, still not invoiced.
+    const untouched = await db.job.findUniqueOrThrow({ where: { id: warranty.jobId } });
+    expect(untouched.status).toBe('COMPLETED');
+    expect(await db.invoice.count({ where: { jobId: warranty.jobId } })).toBe(0);
+  });
+
+  it('will not bill the same job twice', async () => {
+    const org = await createTestOrg('BillingTwice');
+    const ctx = systemContext(org.organizationId);
+    const item = await createPriceBookItem(org.organizationId, {
+      name: 'Tap replacement',
+      category: 'LABOR',
+      costCents: 2_000n,
+      priceCents: 12_000n,
+    });
+    const job = await finished(org, ctx, item, 'Replace kitchen tap');
+
+    await billJob(db, ctx, job.jobId, { issueDate: utc(2026, 3, 12) });
+    const again = await billJobs(db, ctx, [job.jobId], { issueDate: utc(2026, 3, 12) });
+
+    expect(again.billedCount).toBe(0);
+    expect(again.results[0].error).toBeTruthy();
+    expect(await db.invoice.count({ where: { jobId: job.jobId } })).toBe(1);
   });
 });

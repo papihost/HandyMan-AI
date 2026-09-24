@@ -5,6 +5,8 @@ import { scopedDb } from '../../../lib/auth/scoped-db';
 import { sum } from '../../../lib/money';
 import { Flag, Money, Panel } from '../../../components/office/primitives';
 import { unbilledCompletedJobs } from '../../../lib/reporting/dashboard';
+import { PERMISSIONS } from '../../../lib/auth/permissions';
+import { BillAllButton, BillJobButton } from '../../../components/office/billing-actions';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,12 +20,29 @@ export default async function JobsPage({
 
   if (filter === 'unbilled') {
     const unbilled = await unbilledCompletedJobs(db, ctx);
+    const canBill = ctx.permissions.has(PERMISSIONS.INVOICE_WRITE);
+    const collected = sum(unbilled.jobs.map((job) => job.collectedCents));
 
     return (
       <div className="space-y-5">
         <Header title="Finished, not invoiced" subtitle="Work already earned and waiting to be billed" />
 
-        <Panel title={`${unbilled.jobs.length} jobs`} subtitle={`worth ${money(unbilled.totalCents)}`}>
+        <Panel
+          title={`${unbilled.jobs.length} jobs`}
+          subtitle={
+            collected > 0n
+              ? `worth ${money(unbilled.totalCents)}, of which ${money(collected)} has already been collected in the field`
+              : `worth ${money(unbilled.totalCents)}`
+          }
+          action={
+            canBill ? (
+              <BillAllButton
+                count={unbilled.jobs.length}
+                valueCents={unbilled.totalCents.toString()}
+              />
+            ) : undefined
+          }
+        >
           <table>
             <thead>
               <tr>
@@ -32,6 +51,7 @@ export default async function JobsPage({
                 <th>Branch</th>
                 <th className="num">Waiting</th>
                 <th className="num">Value</th>
+                <th />
               </tr>
             </thead>
             <tbody>
@@ -56,7 +76,13 @@ export default async function JobsPage({
                   </td>
                   <td className="num">
                     <Money cents={job.valueCents} />
+                    {job.collectedCents > 0n && (
+                      <div className="text-xs" style={{ color: 'var(--ink-3)' }}>
+                        {money(job.collectedCents)} already in
+                      </div>
+                    )}
                   </td>
+                  <td className="num">{canBill && <BillJobButton jobId={job.id} />}</td>
                 </tr>
               ))}
             </tbody>
