@@ -145,57 +145,150 @@ export async function recordJobPurchase(
   return result;
 }
 
+export interface PayBillsOptions {
+  /** Pay everything open and due on or before this date. */
+  throughDate?: Date;
+  /** Or pay exactly these bills, whenever they fall due. */
+  billIds?: string[];
+  /**
+   * When the money left the bank. It defaults to the due-date cutoff, because that is
+   * what a month-end run means — everything due by the 30th, paid on the 30th. A run made
+   * today against bills due next week is a different thing and should say so.
+   */
+  paidAt?: Date;
+  method?: string;
+  /** Cheque number, ACH batch, whatever the bank statement will show. */
+  reference?: string;
+  bankAccountCode?: string;
+}
+
 /**
- * Pay every open bill up to a date.
+ * Pay bills.
  *
  *   Dr Accounts Payable   Cr Operating Bank Account
+ *
+ * Either everything due by a date — the Friday run every shop does — or a named set,
+ * because the other half of paying bills is choosing not to pay one: a disputed invoice, a
+ * vendor being held, a bill somebody wants to settle early to keep a discount.
+ *
+ * One journal entry covers the run and a payment record is written against each bill, so
+ * the bank statement line and the individual bills it settled can be reconciled to each
+ * other afterwards. A run that only flipped statuses would leave the ledger unable to say
+ * which bills a payment covered.
  */
 export async function payOpenBills(
   db: PrismaClient,
   ctx: AuthContext,
-  options: { throughDate: Date; bankAccountCode?: string },
+  options: PayBillsOptions,
 ) {
   requirePermission(ctx, PERMISSIONS.BILL_PAY);
+
+  const selected = options.billIds && options.billIds.length > 0;
+  if (!selected && !options.throughDate) {
+    throw new ValidationError('Pay which bills — a set, or everything due by a date?');
+  }
 
   const bills = await db.vendorBill.findMany({
     where: {
       organizationId: ctx.organizationId,
       status: { in: ['OPEN', 'PARTIALLY_PAID'] },
-      dueDate: { lte: options.throughDate },
+      ...(selected
+        ? { id: { in: options.billIds } }
+        : { dueDate: { lte: options.throughDate } }),
     },
-    select: { id: true, totalCents: true, paidCents: true, vendorId: true, locationId: true },
+    orderBy: [{ dueDate: 'asc' }, { billNo: 'asc' }],
+    select: {
+      id: true,
+      billNo: true,
+      totalCents: true,
+      paidCents: true,
+      vendorId: true,
+      locationId: true,
+      vendor: { select: { name: true } },
+    },
   });
-  if (bills.length === 0) return { paidCount: 0, totalCents: ZERO, journalEntryId: null };
+
+  if (selected && bills.length !== options.billIds!.length) {
+    // Something in the list is already paid, cancelled, or not this organization's. Paying
+    // the rest silently is how a bill gets paid twice by two people on the same afternoon.
+    throw new ValidationError('One of those bills is no longer open — reload and try again');
+  }
+
+  const empty = { paidCount: 0, totalCents: ZERO, journalEntryId: null, bills: [] as PaidBill[] };
+  if (bills.length === 0) return empty;
 
   const total = bills.reduce((t, b) => t + (b.totalCents - b.paidCents), ZERO);
-  if (total <= ZERO) return { paidCount: 0, totalCents: ZERO, journalEntryId: null };
+  if (total <= ZERO) return empty;
+
+  const paidAt = options.paidAt ?? options.throughDate ?? new Date();
+  const bankCode = options.bankAccountCode ?? ACCOUNTS.BANK_OPERATING;
 
   return db.$transaction(async (tx) => {
+    const bank = await tx.account.findFirst({
+      where: { organizationId: ctx.organizationId, code: bankCode },
+      select: { id: true },
+    });
+    if (!bank) throw new NotFoundError('Account', bankCode);
+
     const entry = await postJournalEntry(
       db,
       postingContextFor(ctx),
       {
-        entryDate: options.throughDate,
+        entryDate: paidAt,
         source: 'BILL_PAYMENT',
-        memo: `Payables run through ${options.throughDate.toISOString().slice(0, 10)}`,
+        memo: selected
+          ? `Paid ${bills.length} ${bills.length === 1 ? 'bill' : 'bills'}`
+          : `Payables run through ${options.throughDate!.toISOString().slice(0, 10)}`,
         lines: [
           { accountCode: ACCOUNTS.AP, debitCents: total },
-          {
-            accountCode: options.bankAccountCode ?? ACCOUNTS.BANK_OPERATING,
-            creditCents: total,
-          },
+          { accountCode: bankCode, creditCents: total },
         ],
       },
       tx,
     );
 
+    const paid: PaidBill[] = [];
+
     for (const bill of bills) {
+      const amountCents = bill.totalCents - bill.paidCents;
+      const paymentNo = await nextDocumentNumber(tx, ctx.organizationId, 'BILL_PAYMENT');
+
+      await tx.billPayment.create({
+        data: {
+          organizationId: ctx.organizationId,
+          vendorBillId: bill.id,
+          paymentNo,
+          amountCents,
+          method: options.method ?? 'ACH',
+          reference: options.reference ?? null,
+          bankAccountId: bank.id,
+          paidAt,
+          journalEntryId: entry.id,
+        },
+      });
+
       await tx.vendorBill.update({
         where: { id: bill.id },
         data: { status: 'PAID', paidCents: bill.totalCents },
       });
+
+      paid.push({
+        billId: bill.id,
+        billNo: bill.billNo,
+        paymentNo,
+        vendorName: bill.vendor.name,
+        amountCents,
+      });
     }
 
-    return { paidCount: bills.length, totalCents: total, journalEntryId: entry.id };
+    return { paidCount: bills.length, totalCents: total, journalEntryId: entry.id, bills: paid };
   });
+}
+
+export interface PaidBill {
+  billId: string;
+  billNo: string;
+  paymentNo: string;
+  vendorName: string;
+  amountCents: Cents;
 }

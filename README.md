@@ -104,7 +104,7 @@ Resetting is safe by construction: it refuses on any organization whose `dataMod
 ## Testing
 
 ```bash
-npm test          # 324 tests: unit + integration against Postgres
+npm test          # 327 tests: unit + integration against Postgres
 npm run typecheck
 ```
 
@@ -141,7 +141,9 @@ and row locks on the document-number sequence. A mock would prove nothing about 
   shelf — and receiving one puts the stock on the shelf and the money in payables in a
   single posting the vendor bill hangs off, with short deliveries treated as the normal
   case. A technician's supply-house receipt becomes a vendor bill coded straight to the
-  job, subcontracted work posts to its own account, and bills are paid in runs.
+  job, subcontracted work posts to its own account, and bills are paid either one at a time
+  or as a run — on the day the money actually leaves, with a payment record against each
+  bill so a line on the bank statement can be reconciled to the bills it settled.
 - The Apex Handyman demo company: three branches, fourteen technicians, ~4,500 jobs across
   twelve months, ~18,000 journal entries — all produced by the posting engine above.
 - The import wizard: delimiter and header detection, per-column date-order and
@@ -182,6 +184,9 @@ and row locks on the document-number sequence. A mock would prove nothing about 
     carrying and short of, and every movement a part has made with the job it went out on.
   - **Ordering** — what the restock list would buy, raised as orders and received against
     the supplier's invoice; ordering posts nothing, receiving posts both sides at once.
+  - **Payables** — what is owed and how late it is, paid one bill at a time or as a run
+    that names the money before it moves it, with a payment record against every bill the
+    run settled.
   - **Close** — what is in the month, what is worth finishing first, the close itself, a
     reopening that insists on a reason, and every posting the lock has turned away.
 - The migration wizard: the five entities in dependency order, detection you can overrule,

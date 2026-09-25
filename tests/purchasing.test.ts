@@ -6,6 +6,7 @@ import { trialBalance } from '../src/lib/accounting/reports';
 import { closePeriod, findPeriodFor } from '../src/lib/accounting/periods';
 import { jobCosting } from '../src/lib/jobs/costing';
 import { payOpenBills, recordJobPurchase } from '../src/lib/purchasing/service';
+import { openBills } from '../src/lib/purchasing/reports';
 import {
   createPurchaseOrder,
   draftOrdersFromReorder,
@@ -202,6 +203,163 @@ describe('paying bills', () => {
     });
     expect(remaining[0].status).toBe('PAID');
     expect(remaining[1].status).toBe('OPEN');
+  });
+
+  it('writes a payment record against each bill it settles', async () => {
+    const org = await createTestOrg('PayRecords');
+    const ctx = systemContext(org.organizationId);
+    const vendor = await db.vendor.create({
+      data: {
+        organizationId: org.organizationId,
+        vendorNo: 'V-0001',
+        name: 'Copper State Supply',
+        paymentTermsDays: 15,
+      },
+    });
+
+    const job = await createTestJob(org.organizationId, org.locationId);
+    await recordJobPurchase(db, ctx, {
+      jobId: job.jobId,
+      vendorId: vendor.id,
+      amountCents: 42_000n,
+      description: 'Special-order parts',
+      purchasedAt: utc(2026, 6, 1),
+    });
+
+    // Paid on the 20th, clearing everything due by the 30th: the ledger records the day
+    // the money left, not the cutoff the run was drawn up against.
+    const run = await payOpenBills(db, ctx, {
+      throughDate: utc(2026, 6, 30),
+      paidAt: utc(2026, 6, 20),
+      method: 'CHECK',
+      reference: '20418',
+    });
+
+    expect(run.paidCount).toBe(1);
+    expect(run.bills[0].paymentNo).toMatch(/^BP-\d{5}$/);
+    expect(run.bills[0].vendorName).toBe('Copper State Supply');
+
+    const payment = await db.billPayment.findFirstOrThrow({
+      where: { organizationId: org.organizationId },
+      include: { vendorBill: true, bankAccount: true },
+    });
+    expect(payment.amountCents).toBe(42_000n);
+    expect(payment.method).toBe('CHECK');
+    expect(payment.reference).toBe('20418');
+    expect(payment.bankAccount.code).toBe(ACCOUNTS.BANK_OPERATING);
+    expect(payment.paidAt.toISOString().slice(0, 10)).toBe('2026-06-20');
+    // The bank line and the bills it covers point at the same posting.
+    expect(payment.journalEntryId).toBe(run.journalEntryId);
+    expect(payment.vendorBill.status).toBe('PAID');
+
+    const entry = await db.journalEntry.findUniqueOrThrow({ where: { id: run.journalEntryId! } });
+    expect(entry.entryDate.toISOString().slice(0, 10)).toBe('2026-06-20');
+  });
+
+  it('pays a named bill early and leaves the others alone', async () => {
+    const org = await createTestOrg('PaySelected');
+    const ctx = systemContext(org.organizationId);
+    const vendor = await db.vendor.create({
+      data: {
+        organizationId: org.organizationId,
+        vendorNo: 'V-0001',
+        name: 'Sunbelt Electrical',
+        paymentTermsDays: 30,
+      },
+    });
+
+    const first = await createTestJob(org.organizationId, org.locationId);
+    const second = await createTestJob(org.organizationId, org.locationId);
+
+    for (const [job, amount] of [
+      [first, 18_000n],
+      [second, 9_000n],
+    ] as const) {
+      await recordJobPurchase(db, ctx, {
+        jobId: job.jobId,
+        vendorId: vendor.id,
+        amountCents: amount,
+        description: 'Materials',
+        purchasedAt: utc(2026, 7, 1),
+      });
+    }
+
+    const bills = await db.vendorBill.findMany({
+      where: { organizationId: org.organizationId },
+      orderBy: { totalCents: 'desc' },
+    });
+
+    // Nothing is due for a month, and this one is being settled anyway — an early
+    // settlement discount, or a supplier who will not load the van until it is paid.
+    const run = await payOpenBills(db, ctx, {
+      billIds: [bills[0].id],
+      paidAt: utc(2026, 7, 3),
+    });
+
+    expect(run.paidCount).toBe(1);
+    expect(run.totalCents).toBe(18_000n);
+
+    const after = await db.vendorBill.findMany({
+      where: { organizationId: org.organizationId },
+      orderBy: { totalCents: 'desc' },
+    });
+    expect(after[0].status).toBe('PAID');
+    expect(after[1].status).toBe('OPEN');
+
+    const tb = await trialBalance(db, ctx, { to: utc(2026, 7, 31) });
+    expect(tb.rows.find((r) => r.code === ACCOUNTS.AP)!.balanceCents).toBe(9_000n);
+    expect(tb.isBalanced).toBe(true);
+
+    // Paying it again is refused rather than quietly paying nothing, because two people
+    // on the same afternoon is exactly how a supplier gets paid twice.
+    await expect(
+      payOpenBills(db, ctx, { billIds: [bills[0].id], paidAt: utc(2026, 7, 4) }),
+    ).rejects.toThrow(/no longer open/);
+  });
+
+  it('shows what is owed and how late it is', async () => {
+    const org = await createTestOrg('PayablesReport');
+    const ctx = systemContext(org.organizationId);
+    const vendor = await db.vendor.create({
+      data: {
+        organizationId: org.organizationId,
+        vendorNo: 'V-0001',
+        name: 'Desert Builders Wholesale',
+        paymentTermsDays: 30,
+        is1099Vendor: false,
+      },
+    });
+
+    const late = await createTestJob(org.organizationId, org.locationId);
+    const soon = await createTestJob(org.organizationId, org.locationId);
+
+    await recordJobPurchase(db, ctx, {
+      jobId: late.jobId,
+      vendorId: vendor.id,
+      amountCents: 25_000n,
+      description: 'Drywall',
+      purchasedAt: utc(2026, 4, 1),
+    });
+    await recordJobPurchase(db, ctx, {
+      jobId: soon.jobId,
+      vendorId: vendor.id,
+      amountCents: 15_000n,
+      description: 'Paint',
+      purchasedAt: utc(2026, 5, 20),
+    });
+
+    // Standing on 8 June: the April bill was due on 1 May, the May one on 19 June.
+    const report = await openBills(db, ctx, utc(2026, 6, 8));
+
+    expect(report.totalCents).toBe(40_000n);
+    expect(report.overdueCents).toBe(25_000n);
+    expect(report.dueThisWeekCents).toBe(0n);
+    expect(report.laterCents).toBe(15_000n);
+
+    // Oldest due first, and the job each cost was coded to comes with it.
+    expect(report.bills[0].daysOverdue).toBe(38);
+    expect(report.bills[0].jobNo).toBeTruthy();
+    expect(report.bills[1].daysOverdue).toBe(-11);
   });
 
   it('does nothing when there is nothing due', async () => {

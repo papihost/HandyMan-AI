@@ -169,6 +169,14 @@ Switch to **Diane Kowalczyk, controller**.
    the same amount, and the vendor bill hangs off that same entry — so the document and
    the ledger cannot end up describing different amounts. A short delivery is the normal
    case and is handled as one: receive five of twelve and the order stays open for seven.
+
+   **Payables** is where that bill lands, with everything else the company owes, oldest due
+   first — the mirror of the receivables screen, read off the bills rather than off a
+   balance somebody maintains. Pay one on its own, or run the week: it says what will leave
+   the operating account and across how many suppliers before it does anything. One posting
+   covers the run, and a payment record is written against each bill it settled, so the
+   single line on the bank statement can be matched back to the twenty-one bills it paid.
+   Most systems flip the bills to paid and leave that question unanswerable.
 7. **Close.** The oldest month still open is waiting with what is in it — around 1,900
    entries — and nothing outstanding, so close it. Now look at the month behind it: it will
    not close clean, because finished jobs in it were never invoiced, which is the same
