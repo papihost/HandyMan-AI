@@ -125,6 +125,15 @@ Switch to **Diane Kowalczyk, controller**.
    posted by the invoice rather than by anybody typing. The entry links back to the invoice,
    so the trip runs both ways.
 
+   Above it, **in hand, not yet banked** — the cash and cheques that have been collected
+   and have not reached the bank, with who took each one. Most systems treat a payment as
+   money in the bank the moment it is recorded; this one knows the difference between a
+   cheque in a van and a cheque at the bank, which is the only reason a bank reconciliation
+   is possible. **Bank it** writes the paying-in slip: one line the statement will show,
+   and every payment that made it up pointing back at it. The panel also asserts itself
+   against the ledger — the payments say one number, account 1050 says another, and if they
+   ever disagree the screen says so instead of quietly banking the difference twice.
+
    Stay on the receivables screen for one more beat: **taken in the field, not yet billed**
    — money the technicians collected on doorsteps for work nobody has invoiced. It is not
    a receivable, it is the opposite: a liability, because the work has not been charged for

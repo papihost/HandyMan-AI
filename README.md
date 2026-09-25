@@ -104,7 +104,7 @@ Resetting is safe by construction: it refuses on any organization whose `dataMod
 ## Testing
 
 ```bash
-npm test          # 327 tests: unit + integration against Postgres
+npm test          # 329 tests: unit + integration against Postgres
 npm run typecheck
 ```
 
@@ -129,7 +129,9 @@ and row locks on the document-number sequence. A mock would prove nothing about 
 - Quoting with good/better/best option sets, e-signature approval, and conversion to a job.
 - Jobs with an explicit lifecycle state machine.
 - Invoicing that posts itself to the ledger, deposits held as a liability until earned,
-  payments, and AR aging. Money collected in the field is tagged to the job and the
+  payments, and AR aging. Cash and cheques wait in undeposited funds until a paying-in slip
+  banks them, because a cheque in a van is not money in the bank and a reconciliation
+  depends on knowing the difference. Money collected in the field is tagged to the job and the
   technician who took it, and the invoice, when it is raised, finds and consumes the
   deposit taken for that work without being told about it.
 - Job costing read from the general ledger rather than from a summary table.
@@ -177,8 +179,11 @@ and row locks on the document-number sequence. A mock would prove nothing about 
   - **Invoices** — what was billed, the margin on it, and how the sales tax was worked out,
     jurisdiction by jurisdiction.
   - **Journal entries**, both sides, immutable, linking back to the document that caused
-    them; **financial statements** with account drill-down; **receivables**, including the
-    money the field has already collected for work nobody has billed yet.
+    them; **financial statements** with account drill-down; **receivables**, including a
+    payment recorded against an invoice, the cash and cheques that have not reached the
+    bank yet — asserted against the undeposited funds account, and banked as a slip the
+    statement can be matched to — and the money the field has already collected for work
+    nobody has billed.
   - **Price book review** — every flat rate against the cost it carries, thinnest first.
   - **Inventory** — valuation against the ledger accounts it must equal, what each van is
     carrying and short of, and every movement a part has made with the job it went out on.

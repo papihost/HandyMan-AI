@@ -5,6 +5,7 @@ import { requireContext } from '../../../../server/session';
 import { formatMoney, sum, ZERO } from '../../../../lib/money';
 import { PERMISSIONS } from '../../../../lib/auth/permissions';
 import { Flag, Money, Panel, Percent, StatTile } from '../../../../components/office/primitives';
+import { RecordPaymentButton } from '../../../../components/office/payment-actions';
 
 export const dynamic = 'force-dynamic';
 
@@ -362,6 +363,14 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
             invoice.applications.length === 0
               ? 'Nothing has been received against this invoice'
               : 'Applied to this invoice, newest last'
+          }
+          action={
+            isOpen && ctx.permissions.has(PERMISSIONS.PAYMENT_RECORD) ? (
+              <RecordPaymentButton
+                invoiceId={invoice.id}
+                balanceCents={invoice.balanceCents.toString()}
+              />
+            ) : undefined
           }
         >
           {invoice.applications.length > 0 && (

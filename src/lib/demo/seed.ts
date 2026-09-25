@@ -15,6 +15,7 @@ import {
   sendQuote,
 } from '../quotes/service';
 import { createInvoiceFromJob, issueInvoice, recordPayment } from '../invoices/service';
+import { bankTakings } from '../invoices/banking';
 import { consumePartsForJob, receiveStock, transferStock } from '../inventory/service';
 import { payOpenBills, recordJobPurchase } from '../purchasing/service';
 import { Rng } from './random';
@@ -1329,18 +1330,12 @@ async function postMonthEnd(db: PrismaClient, ctx: AuthContext, input: MonthEndI
   const entryDate = monthEnd > input.today ? input.today : monthEnd;
 
   // ---- collections move to the bank ---------------------------------------
-  const undeposited = await accountBalance(db, ctx.organizationId, ACCOUNTS.UNDEPOSITED_FUNDS, entryDate);
-  if (undeposited > 0n) {
-    await postJournalEntry(db, ctx, {
-      entryDate,
-      source: 'DEPOSIT',
-      memo: 'Cash and cheque deposit',
-      lines: [
-        { accountCode: ACCOUNTS.BANK_OPERATING, debitCents: undeposited },
-        { accountCode: ACCOUNTS.UNDEPOSITED_FUNDS, creditCents: undeposited },
-      ],
-    });
-  }
+  //
+  // Through the same paying-in slip the office uses, rather than a journal entry that
+  // moves the balance and leaves the payments looking unbanked. A demo whose Undeposited
+  // Funds account is empty while every cheque in it says it is still in the drawer is a
+  // demo that falls apart on the first click.
+  await bankTakings(db, ctx, { depositedAt: entryDate });
 
   const clearing = await accountBalance(db, ctx.organizationId, ACCOUNTS.CARD_CLEARING, entryDate);
   if (clearing > 0n) {

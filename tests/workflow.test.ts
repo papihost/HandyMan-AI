@@ -19,6 +19,7 @@ import {
   issueInvoice,
   recordPayment,
 } from '../src/lib/invoices/service';
+import { bankTakings, undepositedPayments } from '../src/lib/invoices/banking';
 import {
   createPriceBookItem,
   createTaxJurisdiction,
@@ -818,5 +819,125 @@ describe('billing the work that is finished', () => {
     expect(again.billedCount).toBe(0);
     expect(again.results[0].error).toBeTruthy();
     expect(await db.invoice.count({ where: { jobId: job.jobId } })).toBe(1);
+  });
+});
+
+describe('getting the money to the bank', () => {
+  it('holds cash and cheques until a slip is written, then banks them together', async () => {
+    const org = await createTestOrg('Banking');
+    const ctx = systemContext(org.organizationId);
+    const item = await createPriceBookItem(org.organizationId, {
+      name: 'Gutter clearing',
+      category: 'LABOR',
+      costCents: 3_000n,
+      priceCents: 20_000n,
+    });
+
+    const invoices: string[] = [];
+    for (const title of ['Clear front gutters', 'Clear back gutters']) {
+      const job = await createTestJob(org.organizationId, org.locationId, title);
+      await addJobLine(db, ctx, job.jobId, { priceBookItemId: item, quantity: '1' });
+      await transitionJob(db, ctx, job.jobId, 'SCHEDULED');
+      await transitionJob(db, ctx, job.jobId, 'IN_PROGRESS');
+      await transitionJob(db, ctx, job.jobId, 'COMPLETED');
+      const billed = await billJob(db, ctx, job.jobId, { issueDate: utc(2026, 8, 3) });
+      invoices.push(billed.invoiceId!);
+    }
+
+    const [first, second] = await db.invoice.findMany({
+      where: { id: { in: invoices } },
+      orderBy: { invoiceNo: 'asc' },
+    });
+
+    // A cheque in the post and a card payment on the phone, the same afternoon.
+    await recordPayment(db, ctx, {
+      customerId: first.customerId,
+      locationId: org.locationId,
+      invoiceId: first.id,
+      method: 'CHECK',
+      amountCents: first.balanceCents,
+      reference: '4471',
+      receivedAt: utc(2026, 8, 4),
+    });
+    await recordPayment(db, ctx, {
+      customerId: second.customerId,
+      locationId: org.locationId,
+      invoiceId: second.id,
+      method: 'CARD',
+      amountCents: second.balanceCents,
+      receivedAt: utc(2026, 8, 4),
+    });
+
+    // Only the cheque is in the drawer. The card is the processor's problem.
+    const inHand = await undepositedPayments(db, ctx);
+    expect(inHand.payments.length).toBe(1);
+    expect(inHand.payments[0].method).toBe('CHECK');
+    expect(inHand.totalCents).toBe(first.balanceCents);
+    // The documents and the postings are two routes to one number, and they agree.
+    expect(inHand.ledgerCents).toBe(first.balanceCents);
+    expect(inHand.matches).toBe(true);
+
+    const before = await trialBalance(db, ctx, { to: utc(2026, 8, 4) });
+    expect(before.rows.find((r) => r.code === ACCOUNTS.UNDEPOSITED_FUNDS)!.balanceCents).toBe(
+      first.balanceCents,
+    );
+    expect(before.rows.find((r) => r.code === ACCOUNTS.BANK_OPERATING)).toBeUndefined();
+
+    const slip = await bankTakings(db, ctx, { depositedAt: utc(2026, 8, 6) });
+
+    expect(slip.depositNo).toMatch(/^DEP-\d{5}$/);
+    expect(slip.paymentCount).toBe(1);
+    expect(slip.totalCents).toBe(first.balanceCents);
+
+    // The bank line and the payments that made it up point at each other.
+    const batch = await db.depositBatch.findFirstOrThrow({
+      where: { organizationId: org.organizationId },
+      include: { payments: true },
+    });
+    expect(batch.journalEntryId).toBe(slip.journalEntryId);
+    expect(batch.payments.length).toBe(1);
+    expect(batch.payments[0].reference).toBe('4471');
+
+    const after = await trialBalance(db, ctx, { to: utc(2026, 8, 6) });
+    expect(after.rows.find((r) => r.code === ACCOUNTS.UNDEPOSITED_FUNDS)?.balanceCents ?? 0n).toBe(
+      0n,
+    );
+    expect(after.rows.find((r) => r.code === ACCOUNTS.BANK_OPERATING)!.balanceCents).toBe(
+      first.balanceCents,
+    );
+    expect(after.isBalanced).toBe(true);
+
+    // Nothing left in hand, and a second slip has nothing to write.
+    expect((await undepositedPayments(db, ctx)).payments.length).toBe(0);
+    const again = await bankTakings(db, ctx, { depositedAt: utc(2026, 8, 7) });
+    expect(again.paymentCount).toBe(0);
+    expect(again.journalEntryId).toBeNull();
+  });
+
+  it('refuses to bank a payment that is already on a slip', async () => {
+    const org = await createTestOrg('BankingTwice');
+    const ctx = systemContext(org.organizationId);
+    const customer = await createCustomer(db, ctx, {
+      lastName: 'Ashworth',
+      property: { addressLine1: '3 B St', city: 'Mesa', state: 'AZ', postalCode: '85201' },
+    });
+
+    const payment = await recordPayment(db, ctx, {
+      customerId: customer.id,
+      locationId: org.locationId,
+      method: 'CASH',
+      amountCents: 12_000n,
+      isDeposit: true,
+      receivedAt: utc(2026, 8, 10),
+    });
+
+    await bankTakings(db, ctx, { depositedAt: utc(2026, 8, 11) });
+
+    await expect(
+      bankTakings(db, ctx, {
+        paymentIds: [payment.payment.id],
+        depositedAt: utc(2026, 8, 12),
+      }),
+    ).rejects.toThrow(/already been banked/);
   });
 });

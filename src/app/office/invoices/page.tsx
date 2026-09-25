@@ -3,6 +3,9 @@ import { db } from '../../../lib/db';
 import { requireContext } from '../../../server/session';
 import { formatMoney } from '../../../lib/money';
 import { agingReport } from '../../../lib/invoices/service';
+import { undepositedPayments } from '../../../lib/invoices/banking';
+import { PERMISSIONS } from '../../../lib/auth/permissions';
+import { BankTakingsButton } from '../../../components/office/payment-actions';
 import { Flag, Money, Panel, StatTile } from '../../../components/office/primitives';
 
 export const dynamic = 'force-dynamic';
@@ -43,6 +46,16 @@ export default async function InvoicesPage() {
    * whoever is chasing debt needs to know which of these calls has already been paid for,
    * or they will ring a customer who settled on the doorstep last Tuesday.
    */
+  /*
+   * What has been collected and has not reached the bank.
+   *
+   * Cash and cheques are not in the bank when they are taken; they are in a van, a drawer,
+   * an envelope. Undeposited Funds is where they sit until somebody makes the trip, and
+   * the gap is both a real risk — this is the money that goes missing — and the reason a
+   * bank reconciliation can be done at all.
+   */
+  const inHand = await undepositedPayments(db, ctx);
+
   const collected = await db.payment.findMany({
     where: { organizationId: ctx.organizationId, isDeposit: true, unappliedCents: { gt: 0 } },
     orderBy: { receivedAt: 'desc' },
@@ -84,6 +97,72 @@ export default async function InvoicesPage() {
         />
         <StatTile label="Over 90 days" value={formatMoney(aging.buckets.over90)} tone={aging.buckets.over90 > 0n ? 'critical' : 'good'} />
       </div>
+
+      {(inHand.payments.length > 0 || !inHand.matches) && (
+        <Panel
+          title="In hand, not yet banked"
+          subtitle={`${formatMoney(inHand.totalCents)} in cash and cheques, the oldest taken ${inHand.oldest ? Math.floor((Date.now() - inHand.oldest.getTime()) / 86_400_000) : 0} days ago. Card takings are not here — they settle from the processor on its own schedule`}
+          action={
+            ctx.permissions.has(PERMISSIONS.PAYMENT_RECORD) && inHand.matches ? (
+              <BankTakingsButton
+                count={inHand.payments.length}
+                totalCents={inHand.totalCents.toString()}
+              />
+            ) : undefined
+          }
+        >
+          {!inHand.matches && (
+            <div className="px-4 pb-1">
+              <Flag tone="critical">
+                The ledger says {formatMoney(inHand.ledgerCents)} is undeposited, and these
+                payments add up to {formatMoney(inHand.totalCents)}
+              </Flag>
+              <p className="mt-1 text-sm" style={{ color: 'var(--ink-2)' }}>
+                Something moved the balance without a paying-in slip behind it. Until that is
+                found, banking from this screen would post the difference twice.
+              </p>
+            </div>
+          )}
+          <div className="overflow-x-auto">
+            <table>
+              <thead>
+                <tr>
+                  <th>Taken</th>
+                  <th>Payment</th>
+                  <th>Customer</th>
+                  <th>Who took it</th>
+                  <th>How</th>
+                  <th className="num">Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {inHand.payments.slice(0, 12).map((payment) => (
+                  <tr key={payment.id}>
+                    <td>{payment.receivedAt.toLocaleDateString()}</td>
+                    <td className="font-medium">{payment.paymentNo}</td>
+                    <td>{payment.customerName}</td>
+                    <td className="text-sm">{payment.collectedByName ?? 'the office'}</td>
+                    <td className="text-sm">
+                      {payment.method === 'CHECK' ? 'cheque' : 'cash'}
+                      {payment.reference ? ` ${payment.reference}` : ''}
+                    </td>
+                    <td className="num font-semibold">
+                      <Money cents={payment.amountCents} />
+                    </td>
+                  </tr>
+                ))}
+                {inHand.payments.length > 12 && (
+                  <tr>
+                    <td colSpan={6} style={{ color: 'var(--ink-3)' }}>
+                      and {inHand.payments.length - 12} more
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      )}
 
       {collected.length > 0 && (
         <Panel
