@@ -1335,7 +1335,14 @@ async function postMonthEnd(db: PrismaClient, ctx: AuthContext, input: MonthEndI
   // moves the balance and leaves the payments looking unbanked. A demo whose Undeposited
   // Funds account is empty while every cheque in it says it is still in the drawer is a
   // demo that falls apart on the first click.
-  await bankTakings(db, ctx, { depositedAt: entryDate });
+  //
+  // What came in over the last few days is still in a van or a drawer: somebody has to
+  // carry it, and they have not been yet. That lag is the demo's opening state on this
+  // screen, and it is the state every shop is actually in.
+  await bankTakings(db, ctx, {
+    depositedAt: entryDate,
+    receivedThrough: new Date(entryDate.getTime() - 4 * 86_400_000),
+  });
 
   const clearing = await accountBalance(db, ctx.organizationId, ACCOUNTS.CARD_CLEARING, entryDate);
   if (clearing > 0n) {

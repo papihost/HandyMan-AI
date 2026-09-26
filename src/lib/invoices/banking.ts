@@ -24,6 +24,18 @@ import { bankDepositLines } from '../accounting/rules/payment';
 
 const TILL_METHODS = ['CASH', 'CHECK'] as const;
 
+/**
+ * A branch manager banks their own branch's takings and nobody else's.
+ *
+ * The drawer is a local thing: the cash in Mesa is carried to a Mesa bank by somebody in
+ * Mesa, and a slip that swept up Scottsdale's cheques as well would be a slip that cannot
+ * be taken to a counter. Callers with company-wide scope see the lot.
+ */
+const branchFilter = (ctx: AuthContext) =>
+  ctx.scope !== 'ALL' && ctx.locationIds.length > 0
+    ? { locationId: { in: ctx.locationIds } }
+    : {};
+
 export interface UndepositedPayment {
   id: string;
   paymentNo: string;
@@ -56,6 +68,7 @@ export async function undepositedPayments(
       organizationId: ctx.organizationId,
       depositBatchId: null,
       method: { in: [...TILL_METHODS] },
+      ...branchFilter(ctx),
     },
     orderBy: { receivedAt: 'asc' },
     take: 200,
@@ -117,6 +130,12 @@ export interface BankTakingsOptions {
   paymentIds?: string[];
   /** When it reached the bank. */
   depositedAt?: Date;
+  /**
+   * Only what was taken by this date. Somebody has to carry it, so what came in this
+   * morning is rarely on this afternoon's slip; a run that swept the drawer to the last
+   * minute would be a run nobody has ever made.
+   */
+  receivedThrough?: Date;
   bankAccountCode?: string;
 }
 
@@ -144,6 +163,8 @@ export async function bankTakings(
       organizationId: ctx.organizationId,
       depositBatchId: null,
       method: { in: [...TILL_METHODS] },
+      ...branchFilter(ctx),
+      ...(options.receivedThrough ? { receivedAt: { lte: options.receivedThrough } } : {}),
       ...(selected ? { id: { in: options.paymentIds } } : {}),
     },
     select: { id: true, amountCents: true, locationId: true },
