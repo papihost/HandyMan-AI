@@ -14,6 +14,7 @@ const NAV = [
   { href: '/office/purchase-orders', label: 'Ordering' },
   { href: '/office/payables', label: 'Payables' },
   { href: '/office/financials', label: 'Financials' },
+  { href: '/office/reconcile', label: 'Reconcile' },
   { href: '/office/periods', label: 'Close' },
   { href: '/office/import', label: 'Migration' },
 ];

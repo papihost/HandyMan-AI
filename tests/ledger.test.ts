@@ -11,6 +11,13 @@ import {
   reopenPeriod,
 } from '../src/lib/accounting/periods';
 import { balanceSheet, profitByLocation, trialBalance } from '../src/lib/accounting/reports';
+import {
+  bankAccounts,
+  completeReconciliation,
+  openReconciliation,
+  reconciliationWorksheet,
+  setCleared,
+} from '../src/lib/accounting/reconciliation';
 import { invoiceIssuedLines } from '../src/lib/accounting/rules/invoice';
 import { paymentReceivedLines } from '../src/lib/accounting/rules/payment';
 import { createTestJob, createTestOrg, utc, type TestOrg } from './factory';
@@ -597,5 +604,192 @@ describe('reporting from the ledger', () => {
 
     const jobLines = await db.journalLine.findMany({ where: { jobId: traced.jobId } });
     expect(jobLines.length).toBeGreaterThan(0);
+  });
+});
+
+describe('bank reconciliation', () => {
+  /** A month of bank movement: two deposits in, one payment out. */
+  async function bankMonth(name: string) {
+    const org = await createTestOrg(name);
+    const ctx = org.systemCtx;
+    const account = await db.account.findFirstOrThrow({
+      where: { organizationId: org.organizationId, code: ACCOUNTS.BANK_OPERATING },
+      select: { id: true },
+    });
+
+    const posted: string[] = [];
+    const movements: [Date, bigint, string][] = [
+      [utc(2026, 3, 4), 120_000n, 'Deposit — cheques'],
+      [utc(2026, 3, 18), 80_000n, 'Deposit — cash'],
+      [utc(2026, 3, 27), -45_000n, 'Payables run'],
+    ];
+
+    for (const [date, amount, memo] of movements) {
+      const entry = await postJournalEntry(db, ctx, {
+        entryDate: date,
+        source: 'MANUAL',
+        memo,
+        lines:
+          amount > 0n
+            ? [
+                { accountCode: ACCOUNTS.BANK_OPERATING, debitCents: amount },
+                { accountCode: ACCOUNTS.OWNERS_EQUITY, creditCents: amount },
+              ]
+            : [
+                { accountCode: ACCOUNTS.OWNERS_EQUITY, debitCents: -amount },
+                { accountCode: ACCOUNTS.BANK_OPERATING, creditCents: -amount },
+              ],
+      });
+      posted.push(entry.id);
+    }
+
+    return { org, ctx, accountId: account.id, posted };
+  }
+
+  it('agrees with the statement, and carries what has not cleared', async () => {
+    const { org, ctx, accountId } = await bankMonth('Reconciling');
+
+    // The statement shows both deposits but not the payables run: the cheques are still
+    // in the post on the 31st.
+    const rec = await openReconciliation(db, ctx, {
+      accountId,
+      statementDate: utc(2026, 3, 31),
+      closingBalanceCents: 200_000n,
+    });
+    expect(rec.openingBalanceCents).toBe(0n);
+
+    const sheet = await reconciliationWorksheet(db, ctx, rec.id);
+    expect(sheet.lines.length).toBe(3);
+    // Money in reads positive, money out negative, the way a statement reads.
+    expect(sheet.lines.map((line) => line.amountCents)).toEqual([120_000n, 80_000n, -45_000n]);
+    expect(sheet.differenceCents).toBe(200_000n);
+
+    const deposits = sheet.lines.filter((line) => line.amountCents > 0n);
+    const ticked = await setCleared(db, ctx, rec.id, {
+      journalLineIds: deposits.map((line) => line.journalLineId),
+      cleared: true,
+    });
+
+    expect(ticked.clearedBalanceCents).toBe(200_000n);
+    expect(ticked.differenceCents).toBe(0n);
+
+    const done = await completeReconciliation(db, ctx, rec.id);
+    expect(done.reconciliation.status).toBe('COMPLETE');
+    expect(done.clearedCount).toBe(2);
+    // The uncashed cheque is not an error; it carries forward.
+    expect(done.outstandingCount).toBe(1);
+    expect(done.outstandingCents).toBe(-45_000n);
+
+    // The next statement opens where this one closed, and only the cheque is left.
+    const next = await openReconciliation(db, ctx, {
+      accountId,
+      statementDate: utc(2026, 4, 30),
+      closingBalanceCents: 155_000n,
+    });
+    expect(next.openingBalanceCents).toBe(200_000n);
+
+    const april = await reconciliationWorksheet(db, ctx, next.id);
+    expect(april.lines.length).toBe(1);
+    expect(april.lines[0].amountCents).toBe(-45_000n);
+    // Out by the cheque until the cheque is ticked: which is the whole point of carrying
+    // it forward rather than writing it off at the end of March.
+    expect(april.differenceCents).toBe(-45_000n);
+
+    const cashed = await setCleared(db, ctx, next.id, {
+      journalLineIds: [april.lines[0].journalLineId],
+      cleared: true,
+    });
+    expect(cashed.differenceCents).toBe(0n);
+    void org;
+  });
+
+  it('will not finish while it is out, and will not tick the same line twice', async () => {
+    const { ctx, accountId } = await bankMonth('ReconcilingOut');
+
+    const rec = await openReconciliation(db, ctx, {
+      accountId,
+      statementDate: utc(2026, 3, 31),
+      closingBalanceCents: 200_000n,
+    });
+
+    await expect(completeReconciliation(db, ctx, rec.id)).rejects.toThrow(/Still out by/);
+
+    const sheet = await reconciliationWorksheet(db, ctx, rec.id);
+    const first = sheet.lines[0].journalLineId;
+
+    // Ticking twice is the same as ticking once — a double click is not a second cheque.
+    await setCleared(db, ctx, rec.id, { journalLineIds: [first], cleared: true });
+    const again = await setCleared(db, ctx, rec.id, { journalLineIds: [first], cleared: true });
+    expect(again.clearedCount).toBe(1);
+
+    // And unticking puts it back in play.
+    const untick = await setCleared(db, ctx, rec.id, { journalLineIds: [first], cleared: false });
+    expect(untick.clearedCount).toBe(0);
+    expect(untick.differenceCents).toBe(200_000n);
+  });
+
+  it('refuses a second open statement, and refuses to go backwards', async () => {
+    const { ctx, accountId } = await bankMonth('ReconcilingOrder');
+
+    const rec = await openReconciliation(db, ctx, {
+      accountId,
+      statementDate: utc(2026, 3, 31),
+      closingBalanceCents: 155_000n,
+    });
+
+    await expect(
+      openReconciliation(db, ctx, {
+        accountId,
+        statementDate: utc(2026, 4, 30),
+        closingBalanceCents: 1n,
+      }),
+    ).rejects.toThrow(/already open/);
+
+    const sheet = await reconciliationWorksheet(db, ctx, rec.id);
+    await setCleared(db, ctx, rec.id, {
+      journalLineIds: sheet.lines.map((line) => line.journalLineId),
+      cleared: true,
+    });
+    await completeReconciliation(db, ctx, rec.id);
+
+    await expect(
+      openReconciliation(db, ctx, {
+        accountId,
+        statementDate: utc(2026, 2, 28),
+        closingBalanceCents: 1n,
+      }),
+    ).rejects.toThrow(/cannot go backwards/);
+  });
+
+  it('offers the accounts a statement arrives for, and not the cash drawer', async () => {
+    const { ctx } = await bankMonth('ReconcilingAccounts');
+
+    const accounts = await bankAccounts(db, ctx);
+    const codes = accounts.map((account) => account.code);
+
+    expect(codes).toContain(ACCOUNTS.BANK_OPERATING);
+    // Undeposited funds is cleared by the paying-in slip that banks it, not by a
+    // statement — nobody posts one for a drawer.
+    expect(codes).not.toContain(ACCOUNTS.UNDEPOSITED_FUNDS);
+
+    const operating = accounts.find((a) => a.code === ACCOUNTS.BANK_OPERATING)!;
+    expect(operating.unclearedCount).toBe(3);
+    expect(operating.ledgerCents).toBe(155_000n);
+    expect(operating.lastStatementDate).toBeNull();
+  });
+
+  it('leaves postings after the statement date off the worksheet', async () => {
+    const { ctx, accountId } = await bankMonth('ReconcilingDates');
+
+    const rec = await openReconciliation(db, ctx, {
+      accountId,
+      statementDate: utc(2026, 3, 20),
+      closingBalanceCents: 200_000n,
+    });
+
+    // The 27th has not happened as far as this statement is concerned.
+    const sheet = await reconciliationWorksheet(db, ctx, rec.id);
+    expect(sheet.lines.length).toBe(2);
+    expect(sheet.lines.every((line) => line.amountCents > 0n)).toBe(true);
   });
 });

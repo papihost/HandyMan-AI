@@ -104,7 +104,7 @@ Resetting is safe by construction: it refuses on any organization whose `dataMod
 ## Testing
 
 ```bash
-npm test          # 334 tests: unit + integration against Postgres
+npm test          # 339 tests: unit + integration against Postgres
 npm run typecheck
 ```
 
@@ -146,6 +146,11 @@ and row locks on the document-number sequence. A mock would prove nothing about 
   job, subcontracted work posts to its own account, and bills are paid either one at a time
   or as a run — on the day the money actually leaves, with a payment record against each
   bill so a line on the bank statement can be reconciled to the bills it settled.
+- Bank reconciliation: the one check in the product that comes from outside it. Tick what
+  the statement also saw, and it will not finish until the difference reads nothing. The
+  marks live in their own table because a posted journal line cannot be updated — clearing
+  is evidence, not an edit — and what stays unticked is a cheque in transit that carries
+  to the next statement.
 - Undoing a sale, the two honest ways: a **void** reverses the posting and gives the work
   back to the job unbilled, and is refused once anything has been paid; a **credit memo**
   leaves the invoice standing and posts a second document against it, apportioning the
@@ -197,6 +202,10 @@ and row locks on the document-number sequence. A mock would prove nothing about 
   - **Payables** — what is owed and how late it is, paid one bill at a time or as a run
     that names the money before it moves it, with a payment record against every bill the
     run settled.
+  - **Reconcile** — the books against the bank, which is the only check in the product
+    that comes from outside it: tick what the statement also saw, and the difference has
+    to read nothing before it will finish. What stays unticked is a cheque in transit, not
+    an error, and it carries to the next statement.
   - **Close** — what is in the month, what is worth finishing first, the close itself, a
     reopening that insists on a reason, and every posting the lock has turned away.
 - The migration wizard: the five entities in dependency order, detection you can overrule,

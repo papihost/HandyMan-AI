@@ -17,6 +17,11 @@ import {
 import { createInvoiceFromJob, issueInvoice, recordPayment } from '../invoices/service';
 import { bankTakings } from '../invoices/banking';
 import { issueCreditMemo } from '../invoices/credits';
+import {
+  completeReconciliation,
+  openReconciliation,
+  setCleared,
+} from '../accounting/reconciliation';
 import { consumePartsForJob, receiveStock, transferStock } from '../inventory/service';
 import { payOpenBills, recordJobPurchase } from '../purchasing/service';
 import { Rng } from './random';
@@ -1465,6 +1470,71 @@ async function postMonthEnd(db: PrismaClient, ctx: AuthContext, input: MonthEndI
       ],
     });
   }
+
+  /*
+   * And somebody reconciles it.
+   *
+   * Only for months that are properly behind us — a statement arrives days after the
+   * month it covers, so the last two are still open, which is what gives the demo a
+   * reconciliation to actually do rather than a screen of finished ones.
+   */
+  if (monthEnd.getTime() < input.today.getTime() - 40 * 86_400_000) {
+    await reconcileMonth(db, ctx, monthEnd);
+  }
+}
+
+/**
+ * One month's statement, reconciled through the same worksheet the office uses.
+ *
+ * The last posting of the month is deliberately left off it: a cheque written on the 30th
+ * has not cleared by the 31st, and a year of statements that each happened to contain
+ * everything would be a year of statements nobody has ever received.
+ */
+async function reconcileMonth(
+  db: PrismaClient,
+  ctx: AuthContext,
+  monthEnd: Date,
+): Promise<void> {
+  const account = await db.account.findFirst({
+    where: { organizationId: ctx.organizationId, code: ACCOUNTS.BANK_OPERATING },
+    select: { id: true },
+  });
+  if (!account) return;
+
+  const previous = await db.bankReconciliation.findFirst({
+    where: { organizationId: ctx.organizationId, accountId: account.id, status: 'COMPLETE' },
+    orderBy: { statementDate: 'desc' },
+    select: { closingBalanceCents: true },
+  });
+
+  const uncleared = await db.journalLine.findMany({
+    where: {
+      accountId: account.id,
+      journalEntry: { postedAt: { not: null }, entryDate: { lte: monthEnd } },
+      cleared: { none: {} },
+    },
+    orderBy: [{ journalEntry: { entryDate: 'asc' } }, { journalEntry: { entryNo: 'asc' } }],
+    select: { id: true, debitCents: true, creditCents: true },
+  });
+  if (uncleared.length === 0) return;
+
+  const onStatement = uncleared.length > 3 ? uncleared.slice(0, -1) : uncleared;
+  const movement = onStatement.reduce(
+    (total, line) => total + line.debitCents - line.creditCents,
+    0n,
+  );
+
+  const rec = await openReconciliation(db, ctx, {
+    accountId: account.id,
+    statementDate: monthEnd,
+    closingBalanceCents: (previous?.closingBalanceCents ?? 0n) + movement,
+  });
+
+  await setCleared(db, ctx, rec.id, {
+    journalLineIds: onStatement.map((line) => line.id),
+    cleared: true,
+  });
+  await completeReconciliation(db, ctx, rec.id);
 }
 
 interface UnbilledTimeInput {

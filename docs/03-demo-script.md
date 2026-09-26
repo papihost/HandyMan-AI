@@ -197,7 +197,22 @@ Switch to **Diane Kowalczyk, controller**.
    covers the run, and a payment record is written against each bill it settled, so the
    single line on the bank statement can be matched back to the twenty-one bills it paid.
    Most systems flip the bills to paid and leave that question unanswerable.
-7. **Close.** The oldest month still open is waiting with what is in it — around 1,900
+7. **Reconcile.** Every other figure in this demo is a query over the postings, so it
+   agrees with the ledger by construction and proves nothing about whether the money is
+   real. This is the one screen that checks the books against something outside them. The
+   operating account is reconciled to the end of two months ago; since then there are
+   postings no statement has claimed. Start one: the statement date and its closing
+   balance are the only things typed, and the opening balance is not asked for, because it
+   is whatever the last statement closed on — letting somebody type it lets them make the
+   difference come out at zero from the wrong end.
+
+   **Tick everything**, and watch the difference go to nothing. Then untick one line: it
+   turns red and **Finish** greys out. Say it plainly — a reconciliation that is allowed
+   to complete while it is out by eleven dollars is worse than none at all, because it
+   says the cash was checked when it was not. What is left unticked when it does agree is
+   a cheque nobody has cashed; it carries to the next statement rather than being written
+   off, which is why last month's shows one outstanding item too.
+8. **Close.** The oldest month still open is waiting with what is in it — around 1,900
    entries — and nothing outstanding, so close it. Now look at the month behind it: it will
    not close clean, because finished jobs in it were never invoiced, which is the same
    money the dashboard flagged in Act 4 seen from the other end. The warning does not block

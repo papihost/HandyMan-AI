@@ -1790,6 +1790,8 @@ model JournalLine {
 
   journalEntry JournalEntry @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
   account      Account      @relation(fields: [accountId], references: [id])
+  /** Statements this line has been seen on. At most one, and never by editing the line. */
+  cleared      BankReconciliationLine[]
   location     Location?    @relation(fields: [locationId], references: [id])
   job          Job?         @relation(fields: [jobId], references: [id])
   serviceType  ServiceType? @relation(fields: [serviceTypeId], references: [id])
@@ -1839,10 +1841,34 @@ model BankReconciliation {
   differenceCents BigInt    @default(0)
   status          String    @default("IN_PROGRESS")
   completedAt     DateTime?
+  completedByUserId String?
+  createdAt       DateTime  @default(now())
 
   account Account @relation(fields: [accountId], references: [id])
+  lines   BankReconciliationLine[]
 
   @@index([organizationId, accountId])
+}
+
+/**
+ * One posting, seen on one statement.
+ *
+ * The mark lives here rather than on the journal line because a posted line is immutable
+ * — no update, ever, no exceptions worth arguing about — and clearing is not an edit to
+ * the accounting anyway. Unticking is a row going away, which touches no ledger at all.
+ */
+model BankReconciliationLine {
+  id                   String   @id @default(cuid())
+  bankReconciliationId String
+  journalLineId        String
+  clearedAt            DateTime @default(now())
+
+  reconciliation BankReconciliation @relation(fields: [bankReconciliationId], references: [id], onDelete: Cascade)
+  journalLine    JournalLine        @relation(fields: [journalLineId], references: [id], onDelete: Cascade)
+
+  /** A line clears once. Two statements cannot both claim the same payment. */
+  @@unique([journalLineId])
+  @@index([bankReconciliationId])
 }
 
 // ============================================================================
