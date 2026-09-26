@@ -125,6 +125,17 @@ Switch to **Diane Kowalczyk, controller**.
    posted by the invoice rather than by anybody typing. The entry links back to the invoice,
    so the trip runs both ways.
 
+   Then do the thing every controller asks about and most field software cannot do: give
+   some of it back. **Credit it** — an amount and a reason — and watch what posts: revenue
+   down, split the way the invoice split it, and the sales tax taken back out of the
+   liability in proportion, because a shop that credits a customer and keeps the tax
+   remits money it never collected. The invoice is untouched; the credit is its own
+   document with its own date. On an invoice nobody has paid yet there is a **Void** as
+   well, which is a different claim — it reverses the original posting and puts the work
+   back on the job as unbilled, ready to be billed again. Once a penny has been paid, the
+   void disappears from the screen: taking away revenue that a customer's money is sitting
+   against is not a choice the system offers.
+
    Above it, **in hand, not yet banked** — the cash and cheques that have been collected
    and have not reached the bank, with who took each one. Most systems treat a payment as
    money in the bank the moment it is recorded; this one knows the difference between a

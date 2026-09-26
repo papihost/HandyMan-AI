@@ -169,3 +169,80 @@ export function invoiceWrittenOffLines(input: {
     },
   ];
 }
+
+export interface CreditMemoPostingInput {
+  creditMemoNo: string;
+  invoiceNo: string;
+  locationId: string;
+  customerId: string;
+  jobId?: string | null;
+  /** The revenue being given back, split the way the invoice split it. */
+  revenueLines: InvoiceRevenueLine[];
+  taxes?: InvoiceTaxAllocation[];
+}
+
+/**
+ * Credit memo issued.
+ *
+ *   Dr  Service Revenue — Labor       the labour being given back
+ *   Dr  Service Revenue — Materials   the materials being given back
+ *   Dr  Sales Tax Payable             the tax on what was credited
+ *     Cr  Accounts Receivable         what the customer no longer owes
+ *
+ * The exact inverse of issuing, and deliberately not a reversal of it: the original
+ * invoice was right when it was written, and a credit is a second event with its own date
+ * and its own reason. A reversal would make the sale look as though it had never
+ * happened, which is what a void is for and is a different claim entirely.
+ *
+ * The tax comes back out of the liability. A shop that credits a customer and keeps the
+ * tax in the account remits money it never collected, and finds out at the filing.
+ */
+export function creditMemoLines(input: CreditMemoPostingInput): PostingLine[] {
+  const revenue = sum(input.revenueLines.map((l) => l.amountCents));
+  const tax = sum((input.taxes ?? []).map((t) => t.taxCents));
+
+  if (revenue + tax <= ZERO) throw new ValidationError('A credit memo needs an amount');
+  if (revenue < ZERO || tax < ZERO) {
+    throw new ValidationError('Credit amounts are positive; they are posted as debits');
+  }
+
+  const dimensions = {
+    locationId: input.locationId,
+    jobId: input.jobId ?? null,
+    customerId: input.customerId,
+  };
+
+  const lines: PostingLine[] = [];
+
+  for (const line of input.revenueLines) {
+    if (line.amountCents === ZERO) continue;
+    lines.push({
+      accountCode: line.revenueAccountCode ?? REVENUE_ACCOUNT[line.category],
+      debitCents: line.amountCents,
+      memo: `Credit ${input.creditMemoNo} against ${input.invoiceNo}`,
+      ...dimensions,
+      serviceTypeId: line.serviceTypeId ?? null,
+    });
+  }
+
+  for (const t of input.taxes ?? []) {
+    if (t.taxCents === ZERO) continue;
+    lines.push({
+      accountCode: t.liabilityAccountCode ?? ACCOUNTS.SALES_TAX_PAYABLE,
+      debitCents: t.taxCents,
+      memo: t.jurisdictionName
+        ? `Sales tax credited — ${t.jurisdictionName} — ${input.creditMemoNo}`
+        : `Sales tax credited — ${input.creditMemoNo}`,
+      ...dimensions,
+    });
+  }
+
+  lines.push({
+    accountCode: ACCOUNTS.AR,
+    creditCents: revenue + tax,
+    memo: `Credit ${input.creditMemoNo} against ${input.invoiceNo}`,
+    ...dimensions,
+  });
+
+  return lines;
+}

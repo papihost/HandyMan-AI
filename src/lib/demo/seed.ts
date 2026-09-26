@@ -16,6 +16,7 @@ import {
 } from '../quotes/service';
 import { createInvoiceFromJob, issueInvoice, recordPayment } from '../invoices/service';
 import { bankTakings } from '../invoices/banking';
+import { issueCreditMemo } from '../invoices/credits';
 import { consumePartsForJob, receiveStock, transferStock } from '../inventory/service';
 import { payOpenBills, recordJobPurchase } from '../purchasing/service';
 import { Rng } from './random';
@@ -1275,6 +1276,33 @@ async function seedOneJob(
         ...(method === 'CARD'
           ? { cardLast4: String(rng.int(1000, 9999)), cardBrand: rng.pick(['visa', 'mastercard', 'amex']) }
           : {}),
+      });
+    }
+  }
+
+  /*
+   * Sometimes money goes back.
+   *
+   * A part came back, a price was argued down, a callback earned somebody a discount they
+   * were never going to be talked out of. Every shop issues a few, and a demo with none
+   * has an implausibly tidy revenue line — and nothing at all on the screen that handles
+   * the awkward half of billing.
+   */
+  if (rng.bool(0.018)) {
+    const creditedAt = new Date(
+      Math.min(workDate.getTime() + rng.int(3, 21) * 86_400_000, Date.now()),
+    );
+    if (creditedAt > workDate) {
+      await issueCreditMemo(db, ctx, {
+        invoiceId: invoice.id,
+        amountCents: (invoice.totalCents * BigInt(rng.int(12, 40))) / 100n,
+        reason: rng.pick([
+          'Goodwill after a return visit',
+          'Part returned unused',
+          'Price agreed down after the visit',
+          'Billed for an hour the technician did not work',
+        ]),
+        issuedAt: creditedAt,
       });
     }
   }

@@ -104,7 +104,7 @@ Resetting is safe by construction: it refuses on any organization whose `dataMod
 ## Testing
 
 ```bash
-npm test          # 329 tests: unit + integration against Postgres
+npm test          # 334 tests: unit + integration against Postgres
 npm run typecheck
 ```
 
@@ -129,7 +129,7 @@ and row locks on the document-number sequence. A mock would prove nothing about 
 - Quoting with good/better/best option sets, e-signature approval, and conversion to a job.
 - Jobs with an explicit lifecycle state machine.
 - Invoicing that posts itself to the ledger, deposits held as a liability until earned,
-  payments, and AR aging. Cash and cheques wait in undeposited funds until a paying-in slip
+  payments, credit memos and voids, and AR aging. Cash and cheques wait in undeposited funds until a paying-in slip
   banks them, because a cheque in a van is not money in the bank and a reconciliation
   depends on knowing the difference. Money collected in the field is tagged to the job and the
   technician who took it, and the invoice, when it is raised, finds and consumes the
@@ -146,6 +146,11 @@ and row locks on the document-number sequence. A mock would prove nothing about 
   job, subcontracted work posts to its own account, and bills are paid either one at a time
   or as a run — on the day the money actually leaves, with a payment record against each
   bill so a line on the bank statement can be reconciled to the bills it settled.
+- Undoing a sale, the two honest ways: a **void** reverses the posting and gives the work
+  back to the job unbilled, and is refused once anything has been paid; a **credit memo**
+  leaves the invoice standing and posts a second document against it, apportioning the
+  sales tax back out of the liability so the filing is not left holding tax nobody
+  collected.
 - The Apex Handyman demo company: three branches, fourteen technicians, ~4,500 jobs across
   twelve months, ~18,000 journal entries — all produced by the posting engine above.
 - The import wizard: delimiter and header detection, per-column date-order and

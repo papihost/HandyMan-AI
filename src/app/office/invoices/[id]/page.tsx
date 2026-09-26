@@ -6,6 +6,7 @@ import { formatMoney, sum, ZERO } from '../../../../lib/money';
 import { PERMISSIONS } from '../../../../lib/auth/permissions';
 import { Flag, Money, Panel, Percent, StatTile } from '../../../../components/office/primitives';
 import { RecordPaymentButton } from '../../../../components/office/payment-actions';
+import { UndoSaleActions } from '../../../../components/office/credit-actions';
 
 export const dynamic = 'force-dynamic';
 
@@ -129,6 +130,26 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
 
   const taxTotal = sum(invoice.taxLines.map((line) => line.taxCents));
 
+  /*
+   * What can still be undone, and how.
+   *
+   * A void is only available while nothing has been paid and nothing credited — after
+   * that it would be taking away revenue that the customer's money, or an earlier credit,
+   * is already sitting against. The screen decides this rather than offering both and
+   * refusing afterwards.
+   */
+  const creditedCents = sum(invoice.creditMemos.map((memo) => memo.amountCents));
+  const settled = invoice.status === 'VOID' || invoice.status === 'DRAFT';
+  const canVoid =
+    !settled &&
+    invoice.paidCents === ZERO &&
+    creditedCents === ZERO &&
+    ctx.permissions.has(PERMISSIONS.INVOICE_VOID);
+  const canCredit =
+    !settled &&
+    creditedCents < invoice.totalCents &&
+    ctx.permissions.has(PERMISSIONS.INVOICE_WRITE_OFF);
+
   return (
     <div className="space-y-5">
       <div>
@@ -169,6 +190,24 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
               {invoice.job.jobNo}
             </Link>{' '}
             <span style={{ color: 'var(--ink-2)' }}>{invoice.job.title}</span>
+          </p>
+        )}
+
+        {(canVoid || canCredit) && (
+          <div className="mt-3">
+            <UndoSaleActions
+              invoiceId={invoice.id}
+              balanceCents={invoice.balanceCents.toString()}
+              canVoid={canVoid}
+              canCredit={canCredit}
+            />
+          </div>
+        )}
+
+        {invoice.status === 'VOID' && (
+          <p className="mt-2 text-sm" style={{ color: 'var(--ink-2)' }}>
+            Reversed, not deleted — the original posting is still in the ledger with its
+            reversal beside it, and the work went back to the job unbilled.
           </p>
         )}
       </div>

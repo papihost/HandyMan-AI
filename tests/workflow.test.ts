@@ -20,6 +20,7 @@ import {
   recordPayment,
 } from '../src/lib/invoices/service';
 import { bankTakings, undepositedPayments } from '../src/lib/invoices/banking';
+import { issueCreditMemo, voidInvoice } from '../src/lib/invoices/credits';
 import {
   createPriceBookItem,
   createTaxJurisdiction,
@@ -939,5 +940,189 @@ describe('getting the money to the bank', () => {
         depositedAt: utc(2026, 8, 12),
       }),
     ).rejects.toThrow(/already been banked/);
+  });
+});
+
+describe('undoing a sale', () => {
+  async function invoiced(name: string, opts: { tax?: boolean } = {}) {
+    const org = await createTestOrg(name);
+    const ctx = systemContext(org.organizationId);
+    const labour = await createPriceBookItem(org.organizationId, {
+      name: 'Repair labour',
+      category: 'LABOR',
+      costCents: 4_000n,
+      priceCents: 30_000n,
+    });
+    const part = await createPriceBookItem(org.organizationId, {
+      name: 'Replacement valve',
+      category: 'MATERIAL',
+      costCents: 2_000n,
+      priceCents: 10_000n,
+    });
+
+    const job = await createTestJob(org.organizationId, org.locationId, 'Fix the thing');
+    if (opts.tax) {
+      const jurisdiction = await createTaxJurisdiction(org.organizationId, { rate: '0.10' });
+      await setPropertyJurisdiction(job.propertyId, jurisdiction);
+    }
+    await addJobLine(db, ctx, job.jobId, { priceBookItemId: labour, quantity: '1' });
+    await addJobLine(db, ctx, job.jobId, { priceBookItemId: part, quantity: '1' });
+    await transitionJob(db, ctx, job.jobId, 'SCHEDULED');
+    await transitionJob(db, ctx, job.jobId, 'IN_PROGRESS');
+    await transitionJob(db, ctx, job.jobId, 'COMPLETED');
+
+    const billed = await billJob(db, ctx, job.jobId, { issueDate: utc(2026, 9, 2) });
+    const invoice = await db.invoice.findUniqueOrThrow({ where: { id: billed.invoiceId! } });
+    return { org, ctx, job, invoice };
+  }
+
+  it('voids an unbilled-in-error invoice by reversing it, and gives the work back', async () => {
+    const { org, ctx, job, invoice } = await invoiced('Voiding');
+    expect(invoice.totalCents).toBe(40_000n);
+
+    const result = await voidInvoice(db, ctx, invoice.id, {
+      reason: 'Billed to the wrong customer',
+      voidedAt: utc(2026, 9, 5),
+    });
+
+    expect(result.invoice.status).toBe('VOID');
+    expect(result.invoice.balanceCents).toBe(0n);
+    expect(result.reversalEntryNo).toMatch(/^JE-/);
+
+    // Nothing owed and nothing earned: the reversal cancels the issue, and the original
+    // entry is still there — corrections are postings, not edits.
+    const tb = await trialBalance(db, ctx, { to: utc(2026, 9, 30) });
+    expect(tb.rows.find((r) => r.code === ACCOUNTS.AR)?.balanceCents ?? 0n).toBe(0n);
+    expect(tb.rows.find((r) => r.code === ACCOUNTS.REVENUE_LABOR)?.balanceCents ?? 0n).toBe(0n);
+    expect(tb.isBalanced).toBe(true);
+    expect(await db.journalEntry.count({ where: { organizationId: org.organizationId, source: 'INVOICE' } })).toBe(1);
+
+    // The work is billable again, and the screen that finds unbilled work can see it.
+    const after = await db.job.findUniqueOrThrow({ where: { id: job.jobId } });
+    expect(after.status).toBe('COMPLETED');
+    const lines = await db.jobLine.findMany({ where: { jobId: job.jobId } });
+    expect(lines.every((line) => !line.isBilled && line.invoiceId === null)).toBe(true);
+
+    const rebilled = await billJob(db, ctx, job.jobId, { issueDate: utc(2026, 9, 6) });
+    expect(rebilled.totalCents).toBe(40_000n);
+    expect(rebilled.invoiceNo).not.toBe(invoice.invoiceNo);
+  });
+
+  it('refuses to void what has been paid, and refuses without a reason', async () => {
+    const { ctx, invoice } = await invoiced('VoidingPaid');
+
+    await expect(voidInvoice(db, ctx, invoice.id, { reason: '  ' })).rejects.toThrow(
+      /needs a reason/,
+    );
+
+    await recordPayment(db, ctx, {
+      customerId: invoice.customerId,
+      locationId: invoice.locationId,
+      invoiceId: invoice.id,
+      method: 'CHECK',
+      amountCents: 10_000n,
+      receivedAt: utc(2026, 9, 4),
+    });
+
+    await expect(
+      voidInvoice(db, ctx, invoice.id, { reason: 'Changed our minds' }),
+    ).rejects.toThrow(/Credit it instead/);
+  });
+
+  it('credits part of an invoice, taking the tax back out with it', async () => {
+    const { ctx, invoice } = await invoiced('Crediting', { tax: true });
+
+    // 40,000 of work plus 10% tax.
+    expect(invoice.taxCents).toBe(4_000n);
+    expect(invoice.totalCents).toBe(44_000n);
+
+    const credit = await issueCreditMemo(db, ctx, {
+      invoiceId: invoice.id,
+      amountCents: 11_000n,
+      reason: 'Goodwill after a callback',
+      issuedAt: utc(2026, 9, 8),
+    });
+
+    expect(credit.creditMemoNo).toMatch(/^CM-\d{5}$/);
+    // A quarter of the bill is a quarter of the tax: the liability cannot keep tax that
+    // was never collected.
+    expect(credit.taxCents).toBe(1_000n);
+    expect(credit.revenueCents).toBe(10_000n);
+    expect(credit.invoice.balanceCents).toBe(33_000n);
+    expect(credit.invoice.status).toBe('OPEN');
+
+    const tb = await trialBalance(db, ctx, { to: utc(2026, 9, 30) });
+    expect(tb.rows.find((r) => r.code === ACCOUNTS.AR)!.balanceCents).toBe(33_000n);
+    expect(tb.rows.find((r) => r.code === ACCOUNTS.SALES_TAX_PAYABLE)!.balanceCents).toBe(3_000n);
+    // Revenue came down, split the way the invoice was: three quarters of each account.
+    expect(tb.rows.find((r) => r.code === ACCOUNTS.REVENUE_LABOR)!.balanceCents).toBe(22_500n);
+    expect(tb.rows.find((r) => r.code === ACCOUNTS.REVENUE_MATERIALS)!.balanceCents).toBe(7_500n);
+    expect(tb.isBalanced).toBe(true);
+
+    // The original invoice and its posting are untouched: a credit is a second event.
+    const original = await db.invoice.findUniqueOrThrow({ where: { id: invoice.id } });
+    expect(original.totalCents).toBe(44_000n);
+    expect(original.voidedAt).toBeNull();
+  });
+
+  it('credits the rest, and will not credit more than the invoice', async () => {
+    const { ctx, invoice } = await invoiced('CreditingFully');
+
+    await issueCreditMemo(db, ctx, {
+      invoiceId: invoice.id,
+      amountCents: 15_000n,
+      reason: 'Part returned',
+      issuedAt: utc(2026, 9, 9),
+    });
+
+    // No amount means what is still owed.
+    const rest = await issueCreditMemo(db, ctx, {
+      invoiceId: invoice.id,
+      reason: 'Job abandoned by the customer',
+      issuedAt: utc(2026, 9, 10),
+    });
+    expect(rest.amountCents).toBe(25_000n);
+    expect(rest.invoice.balanceCents).toBe(0n);
+    expect(rest.invoice.status).toBe('PAID');
+
+    await expect(
+      issueCreditMemo(db, ctx, { invoiceId: invoice.id, amountCents: 100n, reason: 'Again' }),
+    ).rejects.toThrow(/credited in full/);
+
+    // And a fully credited invoice cannot then be voided as if it never happened.
+    await expect(
+      voidInvoice(db, ctx, invoice.id, { reason: 'Tidying up' }),
+    ).rejects.toThrow(/already been credited/);
+
+    const tb = await trialBalance(db, ctx, { to: utc(2026, 9, 30) });
+    expect(tb.rows.find((r) => r.code === ACCOUNTS.AR)?.balanceCents ?? 0n).toBe(0n);
+    expect(tb.isBalanced).toBe(true);
+  });
+
+  it('leaves a credit standing when the customer has already paid', async () => {
+    const { ctx, invoice } = await invoiced('CreditingPaid');
+
+    await recordPayment(db, ctx, {
+      customerId: invoice.customerId,
+      locationId: invoice.locationId,
+      invoiceId: invoice.id,
+      method: 'CARD',
+      amountCents: invoice.totalCents,
+      receivedAt: utc(2026, 9, 4),
+    });
+
+    const credit = await issueCreditMemo(db, ctx, {
+      invoiceId: invoice.id,
+      amountCents: 5_000n,
+      reason: 'Overcharged for the part',
+      issuedAt: utc(2026, 9, 11),
+    });
+    expect(credit.amountCents).toBe(5_000n);
+
+    // The customer is owed money now, and the receivable says so by going negative — which
+    // is the truth until it is refunded or set against their next invoice.
+    const tb = await trialBalance(db, ctx, { to: utc(2026, 9, 30) });
+    expect(tb.rows.find((r) => r.code === ACCOUNTS.AR)!.balanceCents).toBe(-5_000n);
+    expect(tb.isBalanced).toBe(true);
   });
 });
