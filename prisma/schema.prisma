@@ -2060,6 +2060,31 @@ model SyncOperation {
   @@index([userId, sequence])
 }
 
+/**
+ * A link that lets one customer see one document without an account.
+ *
+ * Only the hash of the token is kept, the same way sessions are: the link lives in the
+ * customer's inbox and nowhere else, so a copy of this database does not hand anybody a
+ * working link to somebody's invoice. It expires, it can be revoked, and it records when
+ * it was opened — which is the single most useful thing an office can know about a bill
+ * it has sent.
+ */
+model DocumentShare {
+  id              String    @id @default(cuid())
+  organizationId  String
+  documentType    String    // INVOICE, QUOTE
+  documentId      String
+  tokenHash       String    @unique
+  expiresAt       DateTime
+  viewedAt        DateTime?
+  viewCount       Int       @default(0)
+  revokedAt       DateTime?
+  createdByUserId String?
+  createdAt       DateTime  @default(now())
+
+  @@index([organizationId, documentType, documentId])
+}
+
 model Notification {
   id             String   @id @default(cuid())
   organizationId String

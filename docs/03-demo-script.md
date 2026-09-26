@@ -125,6 +125,16 @@ Switch to **Diane Kowalczyk, controller**.
    posted by the invoice rather than by anybody typing. The entry links back to the invoice,
    so the trip runs both ways.
 
+   Then **send it**. The customer gets a link, and what opens is a document on the
+   company's letterhead — the lines, the tax by jurisdiction, what is due — with no
+   account, no login and no application around it. Open it in a private window to prove
+   the point, then come back: the invoice now says **Opened**, which is the difference
+   between a bill that was ignored and one that never arrived. Say the honest part out
+   loud: no mail provider is connected in this build, so the message is sitting in the
+   outbox with the address and the body it would go out with, and the link is there to be
+   pasted into an email in the meantime. The document prints to PDF from the browser —
+   there is no second renderer to disagree with what the screen says.
+
    Then do the thing every controller asks about and most field software cannot do: give
    some of it back. **Credit it** — an amount and a reason — and watch what posts: revenue
    down, split the way the invoice split it, and the sales tax taken back out of the

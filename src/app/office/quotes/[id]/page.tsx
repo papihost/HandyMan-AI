@@ -3,6 +3,8 @@ import { notFound } from 'next/navigation';
 import { db } from '../../../../lib/db';
 import { requireContext } from '../../../../server/session';
 import { formatMoney } from '../../../../lib/money';
+import { SendDocument } from '../../../../components/office/send-document';
+import { deliveryState } from '../../../../lib/documents/delivery';
 import { PERMISSIONS } from '../../../../lib/auth/permissions';
 import { Flag, Money, Panel, StatTile } from '../../../../components/office/primitives';
 
@@ -45,6 +47,7 @@ export default async function QuotePage({ params }: { params: Promise<{ id: stri
 
   const selected = quote.options.find((option) => option.isSelected);
   const decided = quote.status === 'APPROVED' || quote.status === 'CONVERTED';
+  const delivery = await deliveryState(db, ctx, 'QUOTE', quote.id);
 
   return (
     <div className="space-y-5">
@@ -70,6 +73,21 @@ export default async function QuotePage({ params }: { params: Promise<{ id: stri
             : ' · raised in the office'}
         </p>
         {quote.title && <p className="mt-1 font-medium">{quote.title}</p>}
+
+        <div className="mt-3">
+          <SendDocument
+            type="QUOTE"
+            documentId={quote.id}
+            defaultTo={quote.customer.email}
+            state={{
+              sendCount: delivery.sendCount,
+              lastSentTo: delivery.lastSentTo,
+              lastSentAt: delivery.lastSentAt?.toISOString() ?? null,
+              viewedAt: delivery.viewedAt?.toISOString() ?? null,
+              viewCount: delivery.viewCount,
+            }}
+          />
+        </div>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-3">

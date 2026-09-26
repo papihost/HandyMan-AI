@@ -22,6 +22,13 @@ import {
 import { bankTakings, undepositedPayments } from '../src/lib/invoices/banking';
 import { issueCreditMemo, voidInvoice } from '../src/lib/invoices/credits';
 import {
+  deliveryState,
+  hashShareToken,
+  resolveShare,
+  revokeShares,
+  sendDocument,
+} from '../src/lib/documents/delivery';
+import {
   createPriceBookItem,
   createTaxJurisdiction,
   createTestJob,
@@ -1124,5 +1131,138 @@ describe('undoing a sale', () => {
     const tb = await trialBalance(db, ctx, { to: utc(2026, 9, 30) });
     expect(tb.rows.find((r) => r.code === ACCOUNTS.AR)!.balanceCents).toBe(-5_000n);
     expect(tb.isBalanced).toBe(true);
+  });
+});
+
+describe('getting the document to the customer', () => {
+  async function sendable(name: string) {
+    const org = await createTestOrg(name);
+    const ctx = systemContext(org.organizationId);
+    const item = await createPriceBookItem(org.organizationId, {
+      name: 'Fence panel replacement',
+      category: 'LABOR',
+      costCents: 5_000n,
+      priceCents: 35_000n,
+    });
+    const job = await createTestJob(org.organizationId, org.locationId, 'Replace fence panel');
+    await db.customer.update({
+      where: { id: job.customerId },
+      data: { email: 'owner@example.com' },
+    });
+    await addJobLine(db, ctx, job.jobId, { priceBookItemId: item, quantity: '1' });
+    await transitionJob(db, ctx, job.jobId, 'SCHEDULED');
+    await transitionJob(db, ctx, job.jobId, 'IN_PROGRESS');
+    await transitionJob(db, ctx, job.jobId, 'COMPLETED');
+    const billed = await billJob(db, ctx, job.jobId, { issueDate: utc(2026, 9, 14) });
+    return { org, ctx, invoiceId: billed.invoiceId!, customerId: job.customerId };
+  }
+
+  it('makes a link, queues the message, and knows when it was opened', async () => {
+    const { ctx, invoiceId } = await sendable('Sending');
+
+    const sent = await sendDocument(db, ctx, { type: 'INVOICE', documentId: invoiceId });
+    expect(sent.to).toBe('owner@example.com');
+    expect(sent.subject).toMatch(/^Invoice INV-/);
+    expect(sent.path).toMatch(/^\/d\/[A-Za-z0-9_-]{20,}$/);
+
+    const token = sent.path.replace('/d/', '');
+
+    // Only the hash is stored: a copy of the database is not a set of working links.
+    const share = await db.documentShare.findFirstOrThrow({ where: { documentId: invoiceId } });
+    expect(share.tokenHash).not.toContain(token);
+    expect(share.tokenHash).toBe(hashShareToken(token));
+    expect(share.viewedAt).toBeNull();
+
+    // The message is real and waiting, rather than claimed as sent.
+    const message = await db.notification.findFirstOrThrow({
+      where: { entityType: 'INVOICE', entityId: invoiceId },
+    });
+    expect(message.status).toBe('QUEUED');
+    expect(message.channel).toBe('EMAIL');
+    expect(message.body).toContain(sent.path);
+
+    const before = await deliveryState(db, ctx, 'INVOICE', invoiceId);
+    expect(before.sendCount).toBe(1);
+    expect(before.viewedAt).toBeNull();
+
+    // The customer opens it. No account, no session — the token is the whole of it.
+    const opened = await resolveShare(db, token);
+    expect(opened!.id).toBe(share.id);
+
+    const after = await deliveryState(db, ctx, 'INVOICE', invoiceId);
+    expect(after.viewedAt).not.toBeNull();
+    expect(after.viewCount).toBe(1);
+
+    // And the invoice itself carries it, so the office sees it without going looking.
+    const invoice = await db.invoice.findUniqueOrThrow({ where: { id: invoiceId } });
+    expect(invoice.sentAt).not.toBeNull();
+    expect(invoice.viewedAt).not.toBeNull();
+  });
+
+  it('refuses a wrong, revoked or expired link without saying which', async () => {
+    const { ctx, invoiceId } = await sendable('SendingLinks');
+
+    const sent = await sendDocument(db, ctx, { type: 'INVOICE', documentId: invoiceId });
+    const token = sent.path.replace('/d/', '');
+
+    expect(await resolveShare(db, 'not-a-real-token-but-long-enough')).toBeNull();
+    expect(await resolveShare(db, '')).toBeNull();
+
+    await revokeShares(db, ctx, 'INVOICE', invoiceId);
+    expect(await resolveShare(db, token)).toBeNull();
+
+    // A second send makes its own link, so killing one does not kill the other.
+    const again = await sendDocument(db, ctx, { type: 'INVOICE', documentId: invoiceId });
+    expect(again.path).not.toBe(sent.path);
+    expect(await resolveShare(db, again.path.replace('/d/', ''))).not.toBeNull();
+
+    const expired = await sendDocument(db, ctx, {
+      type: 'INVOICE',
+      documentId: invoiceId,
+      expiresInDays: -1,
+    });
+    expect(await resolveShare(db, expired.path.replace('/d/', ''))).toBeNull();
+  });
+
+  it('will not send to nobody, or to something that is not an address', async () => {
+    const { ctx, invoiceId, customerId } = await sendable('SendingAddress');
+
+    await expect(
+      sendDocument(db, ctx, { type: 'INVOICE', documentId: invoiceId, to: 'not an address' }),
+    ).rejects.toThrow(/does not look like an email/);
+
+    await db.customer.update({ where: { id: customerId }, data: { email: null } });
+    await expect(
+      sendDocument(db, ctx, { type: 'INVOICE', documentId: invoiceId }),
+    ).rejects.toThrow(/no email address on file/);
+  });
+
+  it('sending a draft quote is what makes it sent', async () => {
+    const org = await createTestOrg('SendingQuote');
+    const ctx = systemContext(org.organizationId);
+    const item = await createPriceBookItem(org.organizationId, {
+      name: 'Deck staining',
+      category: 'LABOR',
+      costCents: 8_000n,
+      priceCents: 48_000n,
+    });
+    const customer = await createCustomer(db, ctx, {
+      lastName: 'Okafor',
+      email: 'okafor@example.com',
+      property: { addressLine1: '9 C St', city: 'Mesa', state: 'AZ', postalCode: '85201' },
+    });
+    const quote = await createQuote(db, ctx, {
+      locationId: org.locationId,
+      customerId: customer.id,
+      propertyId: customer.properties[0].id,
+      lines: [{ priceBookItemId: item, quantity: '1' }],
+    });
+    expect(quote.status).toBe('DRAFT');
+
+    await sendDocument(db, ctx, { type: 'QUOTE', documentId: quote.id });
+
+    const after = await db.quote.findUniqueOrThrow({ where: { id: quote.id } });
+    expect(after.status).toBe('SENT');
+    expect(after.sentAt).not.toBeNull();
   });
 });

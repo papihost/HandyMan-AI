@@ -104,7 +104,7 @@ Resetting is safe by construction: it refuses on any organization whose `dataMod
 ## Testing
 
 ```bash
-npm test          # 339 tests: unit + integration against Postgres
+npm test          # 343 tests: unit + integration against Postgres
 npm run typecheck
 ```
 
@@ -146,6 +146,13 @@ and row locks on the document-number sequence. A mock would prove nothing about 
   job, subcontracted work posts to its own account, and bills are paid either one at a time
   or as a run — on the day the money actually leaves, with a payment record against each
   bill so a line on the bank statement can be reconciled to the bills it settled.
+- Document delivery: a quote or an invoice becomes a link the customer opens without an
+  account — a proper document on the company's letterhead that prints to PDF — and the
+  office finds out when they opened it, which is the difference between a bill that was
+  ignored and one that never arrived. Only the hash of the link's token is stored, the
+  way sessions are; links expire and can be revoked one at a time. No mail provider is
+  connected, so the message waits in the outbox with the address and body it would go out
+  with rather than claiming to have been sent.
 - Bank reconciliation: the one check in the product that comes from outside it. Tick what
   the statement also saw, and it will not finish until the difference reads nothing. The
   marks live in their own table because a posted journal line cannot be updated — clearing
@@ -218,10 +225,11 @@ The full path is covered end to end by `tests/workflow.test.ts`: a quote approve
 field becomes a job, the job becomes an invoice, the invoice posts to the general ledger,
 and the margin on that job is read back off the same journal lines the P&L is built from.
 
-**Next:** nothing is blocking a demo. The obvious things after that are a card processor
-behind the field payment flow (the flow and its ledger treatment are built; no rail is
-connected), a customer-facing portal, and scheduled service agreements moving from the
-data model into screens.
+**Next:** nothing is blocking a demo. The obvious things after that are the two rails
+nothing is plugged into — a card processor behind the field payment flow and an email
+transport behind document delivery, both of which are built up to the point where the
+provider would take over — then time approval and payroll, and scheduled service
+agreements moving from the data model into screens.
 
 ## Architecture notes
 

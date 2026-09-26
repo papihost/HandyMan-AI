@@ -7,6 +7,8 @@ import { PERMISSIONS } from '../../../../lib/auth/permissions';
 import { Flag, Money, Panel, Percent, StatTile } from '../../../../components/office/primitives';
 import { RecordPaymentButton } from '../../../../components/office/payment-actions';
 import { UndoSaleActions } from '../../../../components/office/credit-actions';
+import { SendDocument } from '../../../../components/office/send-document';
+import { deliveryState } from '../../../../lib/documents/delivery';
 
 export const dynamic = 'force-dynamic';
 
@@ -138,6 +140,8 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
    * is already sitting against. The screen decides this rather than offering both and
    * refusing afterwards.
    */
+  const delivery = await deliveryState(db, ctx, 'INVOICE', invoice.id);
+
   const creditedCents = sum(invoice.creditMemos.map((memo) => memo.amountCents));
   const settled = invoice.status === 'VOID' || invoice.status === 'DRAFT';
   const canVoid =
@@ -192,6 +196,21 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
             <span style={{ color: 'var(--ink-2)' }}>{invoice.job.title}</span>
           </p>
         )}
+
+        <div className="mt-3">
+          <SendDocument
+            type="INVOICE"
+            documentId={invoice.id}
+            defaultTo={invoice.customer.email}
+            state={{
+              sendCount: delivery.sendCount,
+              lastSentTo: delivery.lastSentTo,
+              lastSentAt: delivery.lastSentAt?.toISOString() ?? null,
+              viewedAt: delivery.viewedAt?.toISOString() ?? null,
+              viewCount: delivery.viewCount,
+            }}
+          />
+        </div>
 
         {(canVoid || canCredit) && (
           <div className="mt-3">
