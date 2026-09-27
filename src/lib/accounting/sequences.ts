@@ -26,6 +26,7 @@ export type DocumentType =
   | 'DEPOSIT'
   | 'CHANGE_ORDER'
   | 'CYCLE_COUNT'
+  | 'PAYROLL_RUN'
   | 'SERVICE_AGREEMENT';
 
 const DEFAULT_PREFIX: Record<DocumentType, string> = {
@@ -42,6 +43,7 @@ const DEFAULT_PREFIX: Record<DocumentType, string> = {
   DEPOSIT: 'DEP-',
   CHANGE_ORDER: 'CO-',
   CYCLE_COUNT: 'CC-',
+  PAYROLL_RUN: 'PR-',
   SERVICE_AGREEMENT: 'SA-',
 };
 

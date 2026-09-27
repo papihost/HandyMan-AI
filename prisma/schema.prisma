@@ -237,6 +237,7 @@ model Technician {
   vanStock      StockLocation[]
   quotesPresented Quote[]
   paymentsCollected Payment[]
+  payrollLines    PayrollRunLine[]
 
   @@index([organizationId])
 }
@@ -937,13 +938,76 @@ model TimeEntry {
   loadedHourlyCents BigInt?
   costCents    BigInt?
   isApproved   Boolean  @default(false)
+  /** Approval without a name and a time is not an approval. */
+  approvedAt   DateTime?
+  approvedByUserId String?
+  /** The run that paid it. An hour is paid exactly once. */
+  payrollRunId String?
   notes        String?
 
-  technician Technician @relation(fields: [technicianId], references: [id])
-  job        Job?       @relation(fields: [jobId], references: [id])
+  technician Technician  @relation(fields: [technicianId], references: [id])
+  job        Job?        @relation(fields: [jobId], references: [id])
+  payrollRun PayrollRun? @relation(fields: [payrollRunId], references: [id])
 
   @@index([technicianId, startedAt])
   @@index([jobId])
+  @@index([payrollRunId])
+}
+
+/**
+ * A pay period, run.
+ *
+ * This is a payroll register and the entry it posts, not a payroll processor: withholding,
+ * filings and year-end forms belong to whoever the shop pays to do them. What a field
+ * service system owes that provider is the hours — approved, attributable, and never paid
+ * twice — and what it owes the books is the entry that relieves the labour its jobs
+ * accrued.
+ */
+model PayrollRun {
+  id             String    @id @default(cuid())
+  organizationId String
+  runNo          String
+  periodStart    DateTime
+  periodEnd      DateTime
+  payDate        DateTime
+  regularHours   Decimal   @default(0) @db.Decimal(10, 2)
+  overtimeHours  Decimal   @default(0) @db.Decimal(10, 2)
+  grossCents     BigInt    @default(0)
+  employerTaxCents BigInt  @default(0)
+  benefitsCents  BigInt    @default(0)
+  totalCostCents BigInt    @default(0)
+  status         String    @default("POSTED")
+  journalEntryId String?
+  createdByUserId String?
+  createdAt      DateTime  @default(now())
+
+  journalEntry JournalEntry? @relation(fields: [journalEntryId], references: [id])
+  lines        PayrollRunLine[]
+  timeEntries  TimeEntry[]
+
+  @@unique([organizationId, runNo])
+  @@index([organizationId, payDate])
+  // Not for reading: the FK is ON DELETE SET NULL, so without this index every deleted
+  // journal entry scans the whole table. Demo teardown deletes twenty thousand of them.
+  @@index([journalEntryId])
+}
+
+model PayrollRunLine {
+  id             String  @id @default(cuid())
+  payrollRunId   String
+  technicianId   String
+  regularHours   Decimal @default(0) @db.Decimal(10, 2)
+  overtimeHours  Decimal @default(0) @db.Decimal(10, 2)
+  baseHourlyCents BigInt @default(0)
+  grossCents     BigInt  @default(0)
+  employerTaxCents BigInt @default(0)
+  benefitsCents  BigInt  @default(0)
+  totalCostCents BigInt  @default(0)
+
+  payrollRun PayrollRun @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
+  technician Technician @relation(fields: [technicianId], references: [id])
+
+  @@index([payrollRunId])
 }
 
 enum PhotoStage {
@@ -1761,6 +1825,7 @@ model JournalEntry {
   vendorBills      VendorBill[]
   billPayments     BillPayment[]
   depositBatches   DepositBatch[]
+  payrollRuns      PayrollRun[]
   inventoryTxns    InventoryTransaction[]
 
   @@unique([organizationId, entryNo])

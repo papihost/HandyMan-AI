@@ -222,7 +222,32 @@ Switch to **Diane Kowalczyk, controller**.
    says the cash was checked when it was not. What is left unticked when it does agree is
    a cheque nobody has cashed; it carries to the next statement rather than being written
    off, which is why last month's shows one outstanding item too.
-8. **Close.** The oldest month still open is waiting with what is in it — around 1,900
+8. **Timesheets and payroll.** Every hour a technician worked in this demo already posted
+   its loaded cost to the job it was worked on — that is what made the margin figures in
+   Act 2 honest, and the other side of it has been piling up in Payroll Liabilities all
+   year. **Timesheets** is where that becomes payable. A week, grouped by the person
+   rather than by the day, because approving time is a conversation about a technician:
+   "Beau has thirty-three hours and eleven of them are shop time." Approve a week in one
+   press; take it back while it is still unpaid.
+
+   Then **Payroll**. The period is fortnightly from wherever the last run stopped, which
+   is the only boundary that cannot leave a gap. Overtime is counted per week, not across
+   the period — two forty-five hour weeks are ten hours of overtime, not five, and a
+   fortnightly run that adds the hours up first quietly underpays everybody. Run it: one
+   posting, debiting the liability the jobs created and crediting the payroll account.
+
+   The panel worth stopping on is **Accrual against payroll**. Around $1.1m accrued across
+   the year, near enough all of it settled, and what is left is a few per cent. That
+   residue is the point. It is not an error to be cleared — it is the loaded rate being
+   wrong, measured in dollars rather than argued about. Note what is *not* in there: the
+   van and the phone. They are part of what an hour costs and they are in the job's
+   margin, but they are owed to a leasing company and a carrier, so they are applied
+   against overhead instead. Anything payday cannot settle has no business sitting in a
+   liability waiting for payday.
+
+   *The line:* "Most systems either don't cost labour at all, or cost it and never settle
+   it. Either way the balance sheet is telling you something that isn't true."
+9. **Close.** The oldest month still open is waiting with what is in it — around 1,700
    entries — and nothing outstanding, so close it. Now look at the month behind it: it will
    not close clean, because finished jobs in it were never invoiced, which is the same
    money the dashboard flagged in Act 4 seen from the other end. The warning does not block

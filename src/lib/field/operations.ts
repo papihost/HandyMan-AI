@@ -8,7 +8,7 @@ import {
 import { NotFoundError, ValidationError } from '../errors';
 import { ZERO, type Cents } from '../money';
 import { postJournalEntry } from '../accounting/ledger';
-import { laborCostedLines } from '../accounting/rules/labor';
+import { fixedHourlyCost, laborCostedLines } from '../accounting/rules/labor';
 import { nextDocumentNumber } from '../accounting/sequences';
 import { addJobLines, canTransition } from '../jobs/service';
 import { refreshJobRollup } from '../jobs/costing';
@@ -240,6 +240,19 @@ const clockOut: Handler = async (handler) => {
 
   const loaded = rate?.loadedHourlyCents ?? ZERO;
   const base = rate?.baseHourlyCents ?? ZERO;
+  // Van and phone are part of the hour's cost but are not owed to the technician, so they
+  // are applied against overhead rather than accrued as payroll.
+  const fixed = rate
+    ? fixedHourlyCost({
+        baseHourlyCents: rate.baseHourlyCents,
+        payrollTaxRate: rate.payrollTaxRate.toString(),
+        workersCompRate: rate.workersCompRate.toString(),
+        benefitsRate: rate.benefitsRate.toString(),
+        vehicleMonthlyCents: rate.vehicleMonthlyCents,
+        phoneMonthlyCents: rate.phoneMonthlyCents,
+        billableHoursPerMonth: rate.billableHoursPerMonth.toString(),
+      })
+    : ZERO;
   const costCents = (BigInt(minutes) * loaded) / 60n;
 
   await handler.db.timeEntry.update({
@@ -278,6 +291,7 @@ const clockOut: Handler = async (handler) => {
         hours,
         baseHourlyCents: base,
         loadedHourlyCents: loaded,
+        fixedHourlyCents: fixed,
       }),
     });
     journalEntryId = posting.id;

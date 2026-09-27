@@ -140,6 +140,29 @@ burdenMultiplier = 1 + payrollTaxRate + workersCompRate + benefitsRate
 Stored per technician, versioned with an effective date so historical jobs keep the burden rate
 that applied when the work happened. Typical result: a $28/hr tech costs $42–48/hr loaded.
 
+The job carries all of it, but the credit side splits, because the two halves are owed to
+different people:
+
+```
+Dr  COGS — Direct Labor             hours × wage
+Dr  COGS — Labor Burden             hours × (loaded − wage)
+  Cr  2200 Payroll Liabilities      hours × (loaded − fixed)
+  Cr  6130 Vehicle & Phone Applied  hours × fixed
+```
+
+where `fixed` is the vehicle-and-phone slice, `(vehicleMonthlyCost + phoneMonthlyCost) /
+billableHoursPerMonth`. Wage, payroll tax, workers' comp and benefits are owed to or for
+the technician, and a payroll run settles them. The van and the phone are owed to a
+leasing company and a carrier, and are already in overhead — applying them here moves
+that cost into the margin of the job that used the hour, which is the entire point of a
+loaded rate. 6130 is a contra expense and carries a credit balance; its residue is over-
+or under-absorption against the actual 6110/6120 spend.
+
+Crediting the fixed part to Payroll Liabilities instead makes the balance sheet claim the
+company owes its technicians the van, and nothing can ever relieve it: a payroll run pays
+wages, so the account grows by the fixed rate for every hour anybody works, and the
+residue reads as a rate variance it is not.
+
 The cost of a part is captured **at consumption time**, not at report time, so restating
 average cost later never rewrites history.
 

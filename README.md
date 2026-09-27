@@ -104,7 +104,7 @@ Resetting is safe by construction: it refuses on any organization whose `dataMod
 ## Testing
 
 ```bash
-npm test          # 343 tests: unit + integration against Postgres
+npm test          # 352 tests: unit + integration against Postgres
 npm run typecheck
 ```
 
@@ -153,6 +153,18 @@ and row locks on the document-number sequence. A mock would prove nothing about 
   way sessions are; links expire and can be revoked one at a time. No mail provider is
   connected, so the message waits in the outbox with the address and body it would go out
   with rather than claiming to have been sent.
+- Time approval and payroll: every costed hour credits Payroll Liabilities at the
+  technician's loaded rate, which is what makes job margin honest — and a payroll run is
+  the thing that settles it. Hours are approved by the person and the week, overtime is
+  counted per week rather than across the period (two forty-five hour weeks are ten hours
+  of overtime, not five), and an hour is paid exactly once: time a run has paid cannot be
+  un-approved, and a period overlapping one already run is refused. The residue left in
+  the accrual afterwards is the most useful number on the screen, because it is the loaded
+  rate being wrong, measured. The van and the phone are kept out of that accrual on
+  purpose: they are part of an hour's cost but they are owed to a leasing company and a
+  carrier, so they are applied against overhead instead — nothing payday can settle
+  belongs in a liability payday cannot reach. This is a register and an entry, not a
+  payroll processor: it does not file returns or calculate withholding.
 - Bank reconciliation: the one check in the product that comes from outside it. Tick what
   the statement also saw, and it will not finish until the difference reads nothing. The
   marks live in their own table because a posted journal line cannot be updated — clearing
@@ -163,8 +175,9 @@ and row locks on the document-number sequence. A mock would prove nothing about 
   leaves the invoice standing and posts a second document against it, apportioning the
   sales tax back out of the liability so the filing is not left holding tax nobody
   collected.
-- The Apex Handyman demo company: three branches, fourteen technicians, ~4,500 jobs across
-  twelve months, ~18,000 journal entries — all produced by the posting engine above.
+- The Apex Handyman demo company: three branches, fourteen technicians, ~4,600 jobs and
+  ~9,900 shifts across twelve months, ~18,800 journal entries — all produced by the
+  posting engine above.
 - The import wizard: delimiter and header detection, per-column date-order and
   decimal-separator detection, automatic column mapping with a stated confidence and
   reason, validation, a dry run that really executes and is rolled back, opening balances
@@ -209,6 +222,13 @@ and row locks on the document-number sequence. A mock would prove nothing about 
   - **Payables** — what is owed and how late it is, paid one bill at a time or as a run
     that names the money before it moves it, with a payment record against every bill the
     run settled.
+  - **Timesheets** — a week of everyone's hours grouped by the person, because approving
+    time is a conversation about a technician and not about a Tuesday. Approve a week at
+    a time, take one back while it is still unpaid, and see what was worked but is not
+    billable to anybody.
+  - **Payroll** — what the approved hours cost, a run that posts and relieves the accrual
+    the jobs created, and the gap between the two written down where an owner can argue
+    with it.
   - **Reconcile** — the books against the bank, which is the only check in the product
     that comes from outside it: tick what the statement also saw, and the difference has
     to read nothing before it will finish. What stays unticked is a cheque in transit, not
@@ -228,8 +248,8 @@ and the margin on that job is read back off the same journal lines the P&L is bu
 **Next:** nothing is blocking a demo. The obvious things after that are the two rails
 nothing is plugged into — a card processor behind the field payment flow and an email
 transport behind document delivery, both of which are built up to the point where the
-provider would take over — then time approval and payroll, and scheduled service
-agreements moving from the data model into screens.
+provider would take over — and scheduled service agreements moving from the data model
+into screens.
 
 ## Architecture notes
 

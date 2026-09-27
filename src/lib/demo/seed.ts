@@ -1,11 +1,11 @@
-import type { LineCategory, Prisma, PrismaClient } from '@prisma/client';
+import type { LineCategory, Prisma, PrismaClient, TimeEntryKind } from '@prisma/client';
 import { systemContext, type AuthContext } from '../auth/context';
 import { hashPassword } from '../auth/password';
 import { provisionOrganization } from '../accounting/setup';
 import { ACCOUNTS } from '../accounting/chart-of-accounts';
 import { closePeriod } from '../accounting/periods';
 import { postJournalEntry } from '../accounting/ledger';
-import { laborCostedLines, loadedHourlyCost } from '../accounting/rules/labor';
+import { fixedHourlyCost, laborCostedLines, loadedHourlyCost } from '../accounting/rules/labor';
 import { addJobLines, createJob, transitionJob } from '../jobs/service';
 import {
   approveQuote,
@@ -17,6 +17,13 @@ import {
 import { createInvoiceFromJob, issueInvoice, recordPayment } from '../invoices/service';
 import { bankTakings } from '../invoices/banking';
 import { issueCreditMemo } from '../invoices/credits';
+import { formatMoney } from '../money';
+import {
+  accrualVariance,
+  payrollPreview,
+  runPayroll,
+  weekStartOf,
+} from '../payroll/service';
 import {
   completeReconciliation,
   openReconciliation,
@@ -65,6 +72,8 @@ interface SeededTech {
   locationCode: string;
   baseHourlyCents: bigint;
   loadedHourlyCents: bigint;
+  /** The van-and-phone slice of the loaded rate, which payroll does not pay. */
+  fixedHourlyCents: bigint;
   laborSku: string;
   callbackRate: number;
   skills: ServiceCode[];
@@ -291,6 +300,7 @@ export async function seedDemoCompany(
       billableHoursPerMonth: '140',
     };
     const loaded = loadedHourlyCost(burden);
+    const fixed = fixedHourlyCost(burden);
 
     const technician = await db.technician.create({
       data: {
@@ -326,6 +336,7 @@ export async function seedDemoCompany(
       locationCode: seed.locationCode,
       baseHourlyCents: seed.baseHourlyCents,
       loadedHourlyCents: loaded,
+      fixedHourlyCents: fixed,
       laborSku: laborSkuByTier[seed.tier],
       callbackRate: seed.callbackRate,
       skills: seed.skills,
@@ -568,6 +579,15 @@ export async function seedDemoCompany(
   );
   const historyEnd = new Date(today.getTime() - CURRENT_WINDOW_BACK_DAYS * 86_400_000);
 
+  /*
+   * Time older than this has been looked at.
+   *
+   * A supervisor approves last week's hours some time this week, so anything inside the
+   * last eight days is still sitting on the approval screen — which is what gives the
+   * demo a timesheet to work through rather than a screen of everything already signed.
+   */
+  const approvedThrough = new Date(today.getTime() - 8 * 86_400_000);
+
   // Finished work that never got invoiced. Nine jobs is a believable tail for a shop
   // this size — enough that the oldest has been sitting for weeks, small enough that
   // it reads as an oversight rather than a broken billing process.
@@ -575,8 +595,16 @@ export async function seedDemoCompany(
   const UNBILLED_WINDOW_DAYS = 30;
   let unbilledRemaining = UNBILLED_JOB_COUNT;
 
+  /*
+   * Thirteen, not twelve: a year of history plus the month in progress.
+   *
+   * Stopping at twelve left the current month outside the loop, so the month before it was
+   * taken for the current one — it never got its unbilled hours and was never closed — and
+   * the weeks between the first of this month and the current week had no work in them at
+   * all. Nothing showed it until a timesheet asked what somebody did on the ninth.
+   */
   const monthWeights: { start: Date; weight: number }[] = [];
-  for (let m = 0; m < 12; m++) {
+  for (let m = 0; m <= 12; m++) {
     const start = new Date(Date.UTC(windowStart.getUTCFullYear(), windowStart.getUTCMonth() + m, 1));
     if (start > today) break;
     monthWeights.push({ start, weight: SEASONALITY[start.getUTCMonth()] });
@@ -626,6 +654,8 @@ export async function seedDemoCompany(
         // many jobs happened to run before it finished.
         rng: new Rng(rng.int(1, 2 ** 30)),
         workDate,
+        approvedThrough,
+        today,
         tech,
         serviceCode,
         locationId: locationByCode.get(location.code)!,
@@ -636,6 +666,54 @@ export async function seedDemoCompany(
         serviceTypeId: serviceTypeByCode.get(serviceCode)!,
         vendorIds,
       });
+    }
+
+    /*
+     * Nobody works a forty-hour Tuesday.
+     *
+     * Each job's date was drawn on its own, so the month averages out at about two calls a
+     * technician a day but the tail piles six onto one day and leaves the next empty. The
+     * ledger never minded — a posting is a posting — but a timesheet reads those days as
+     * impossible, and the overtime on them is arithmetic about a week nobody worked.
+     *
+     * An overloaded day hands its surplus to that technician's next day with room. The
+     * month's job count does not change, nor does any job's own content: the specs carry
+     * their own random streams, so moving one moves only its date.
+     */
+    const MAX_JOBS_PER_TECH_DAY = JOBS_PER_TECH_PER_DAY + 1;
+    const dayLoad = new Map<string, number>();
+    const dayKey = (technicianId: string, date: Date) =>
+      `${technicianId}:${date.toISOString().slice(0, 10)}`;
+
+    const inMonth = (date: Date) =>
+      date.getUTCMonth() === month.start.getUTCMonth() && date <= historyEnd;
+
+    for (const spec of [...specs].sort((a, b) => a.workDate.getTime() - b.workDate.getTime())) {
+      const from = spec.workDate;
+      let placed = false;
+
+      // Forward first, then back from where it was drawn. Forward only would sweep the
+      // month's surplus into the last day before the current week and leave a Wednesday
+      // with three times anybody's work on it — the same pile in a new place.
+      for (const direction of [1, -1]) {
+        for (let step = direction === 1 ? 0 : 1; step < 31 && !placed; step++) {
+          const at = new Date(from.getTime() + direction * step * 86_400_000);
+          if (!inMonth(at)) break;
+
+          const key = dayKey(spec.tech.technicianId, at);
+          const load = dayLoad.get(key) ?? 0;
+          if (load >= MAX_JOBS_PER_TECH_DAY) continue;
+
+          dayLoad.set(key, load + 1);
+          spec.workDate = at;
+          placed = true;
+        }
+        if (placed) break;
+      }
+
+      // Nowhere in the month has room. Leaving it where it was drawn is better than
+      // inventing a job in a week that already has its own.
+      if (!placed) dayLoad.set(dayKey(spec.tech.technicianId, from), MAX_JOBS_PER_TECH_DAY + 1);
     }
 
     // The oldest eligible jobs are the ones left unbilled, so the dashboard can say how
@@ -688,6 +766,7 @@ export async function seedDemoCompany(
         today,
         techs,
         billableHours,
+        approvedThrough,
       });
       billableHours = new Map();
 
@@ -732,6 +811,7 @@ export async function seedDemoCompany(
     today,
     techs,
     billableHours,
+    approvedThrough,
   });
   billableHours = new Map();
 
@@ -843,12 +923,77 @@ export async function seedDemoCompany(
         hours,
         baseHourlyCents: tech.baseHourlyCents,
         loadedHourlyCents: tech.loadedHourlyCents,
+        fixedHourlyCents: tech.fixedHourlyCents,
         description: 'Warranty rework',
       }),
     });
+
+    // Rework is unbillable, not unworked. The hours accrued into payroll like any others,
+    // so they have to exist as time or no run can ever pay them.
+    await recordWorkedTime(db, {
+      technicianId: tech.technicianId,
+      jobId: callback.id,
+      startedAt: callbackDate,
+      hours: Number(hours),
+      isBillable: false,
+      loadedHourlyCents: tech.loadedHourlyCents,
+      approvedThrough,
+      today,
+    });
+
     callbacks++;
   }
   log(`Callbacks: ${callbacks} warranty jobs, costed but not billed`);
+
+  // ---------------------------------------------------------------- payroll
+  /*
+   * And the people get paid.
+   *
+   * Every costed hour has been crediting Payroll Liabilities all year; without a payroll
+   * run the balance sheet claims the company owes its technicians the lot. Fortnightly
+   * runs relieve it, and what is left in the account afterwards is the gap between the
+   * loaded rate the jobs were costed at and what the payroll actually came to — which is
+   * the number worth showing an owner.
+   *
+   * The last fortnight is deliberately left unrun: its hours are approved and waiting,
+   * which is what a payroll screen looks like on any given Monday.
+   */
+  const payrollFrom = weekStartOf(new Date(today.getTime() - 364 * 86_400_000));
+  const lastPayrollEnd = new Date(approvedThrough.getTime());
+  let payrollRuns = 0;
+  let payrollPaid = 0n;
+
+  for (
+    let periodStart = payrollFrom;
+    periodStart.getTime() + 14 * 86_400_000 <= lastPayrollEnd.getTime();
+    periodStart = new Date(periodStart.getTime() + 14 * 86_400_000)
+  ) {
+    const periodEnd = new Date(periodStart.getTime() + 14 * 86_400_000);
+    const payDate = new Date(periodEnd.getTime() + 4 * 86_400_000);
+    const preview = await payrollPreview(db, ctx, { periodStart, periodEnd });
+    if (preview.lines.length === 0) continue;
+
+    // The shop moves the money into the payroll account before the run draws on it.
+    await postJournalEntry(db, ctx, {
+      entryDate: payDate,
+      source: 'MANUAL',
+      memo: `Funding payroll — ${periodEnd.toISOString().slice(0, 10)}`,
+      lines: [
+        { accountCode: ACCOUNTS.BANK_PAYROLL, debitCents: preview.totalCostCents },
+        { accountCode: ACCOUNTS.BANK_OPERATING, creditCents: preview.totalCostCents },
+      ],
+    });
+
+    const run = await runPayroll(db, ctx, { periodStart, periodEnd, payDate });
+    payrollRuns++;
+    payrollPaid += run.run.totalCostCents;
+  }
+
+  const variance = await accrualVariance(db, ctx);
+  log(
+    `Payroll: ${payrollRuns} fortnightly runs, ${formatMoney(payrollPaid)} paid; ` +
+      `${formatMoney(variance.outstandingCents)} left accrued`,
+  );
 
   // ---------------------------------------------------------------- period close
   /*
@@ -929,6 +1074,10 @@ const QUOTE_VALID_DAYS = 30;
 interface OneJobInput {
   rng: Rng;
   workDate: Date;
+  /** Time before this is old enough that a supervisor has approved it. */
+  approvedThrough: Date;
+  /** Now. Nothing is clocked after it, however long the job ran. */
+  today: Date;
   tech: SeededTech;
   serviceCode: ServiceCode;
   locationId: string;
@@ -974,7 +1123,21 @@ async function seedOneJob(
     [2, 34],
     [3, 20],
   ] as const);
-  const chosen = rng.shuffle([...tasks]).slice(0, Math.min(taskCount, tasks.length));
+
+  /*
+   * As many as fit in a day. Three four-hour tasks is not a visit, it is a week's plan, and
+   * quoting it as one call is how a schedule ends up with a sixteen-hour Tuesday on it.
+   * Dispatch knows this, so the punch list that does not fit comes back as a second job.
+   */
+  const VISIT_HOURS = 8;
+  const chosen: typeof tasks = [];
+  let plannedHours = 0;
+  for (const candidate of rng.shuffle([...tasks]).slice(0, Math.min(taskCount, tasks.length))) {
+    const estimate = Number(candidate.estimatedHours ?? '2');
+    if (chosen.length > 0 && plannedHours + estimate > VISIT_HOURS) continue;
+    chosen.push(candidate);
+    plannedHours += estimate;
+  }
   const task = chosen[0];
 
   const lines: { priceBookItemId: string; quantity: string; category?: LineCategory }[] =
@@ -1130,7 +1293,19 @@ async function seedOneJob(
       hours: actualHours,
       baseHourlyCents: tech.baseHourlyCents,
       loadedHourlyCents: tech.loadedHourlyCents,
+      fixedHourlyCents: tech.fixedHourlyCents,
     }),
+  });
+
+  await recordWorkedTime(db, {
+    technicianId: tech.technicianId,
+    jobId,
+    startedAt: workDate,
+    hours: Number(actualHours),
+    isBillable: true,
+    loadedHourlyCents: tech.loadedHourlyCents,
+    approvedThrough: input.approvedThrough,
+    today: input.today,
   });
 
   if (usedParts.length > 0) {
@@ -1313,6 +1488,106 @@ async function seedOneJob(
   }
 
   return { jobId, completed: true, hours: Number(actualHours) };
+}
+
+/**
+ * The clock entry behind a labour posting.
+ *
+ * The ledger has always had the hours; nothing had the shift. Without a time entry there
+ * is nothing to approve and nothing to pay, so every costed hour gets the record a
+ * technician's clock would have left — same hours, same rate snapshot, stamped approved
+ * once the week it belongs to is behind us, because a supervisor has had a week to look
+ * at it.
+ */
+async function recordWorkedTime(
+  db: PrismaClient,
+  input: {
+    technicianId: string;
+    /** Null for paid time that belongs to no job — shop time, restocking, training. */
+    jobId: string | null;
+    kind?: TimeEntryKind;
+    startedAt: Date;
+    hours: number;
+    isBillable: boolean;
+    loadedHourlyCents: bigint;
+    approvedThrough: Date;
+    /** Nothing is clocked after this. Long work spills backwards rather than into next week. */
+    today?: Date;
+  },
+): Promise<void> {
+  /*
+   * A day holds a day.
+   *
+   * Two things put more hours on a technician's day than a day has. Some jobs are quoted at
+   * fourteen and take sixteen; and job dates were drawn independently, so the tail lands
+   * three big calls on one Tuesday. The ledger never minded — it only cares what the hour
+   * cost, not when the shift was — but a timesheet showing twenty-five hours on a Tuesday
+   * is a screen nobody believes, and the overtime computed from it is arithmetic about a
+   * week nobody worked.
+   *
+   * So this is the one place that knows: it asks what the day already holds, fills it to a
+   * long-but-possible day, and carries the rest to the next day with room. The job keeps
+   * its own date and its own cost — what moves is when the shift was worked, which is the
+   * thing the seed was inventing in the first place.
+   */
+  const MAX_HOURS_PER_DAY = 8.5;
+  const MAX_SPILL_DAYS = 10;
+  const midnight = (date: Date) =>
+    new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+
+  const hoursOn = async (day: Date): Promise<number> => {
+    const start = midnight(day);
+    const { _sum } = await db.timeEntry.aggregate({
+      where: {
+        technicianId: input.technicianId,
+        startedAt: { gte: start, lt: new Date(start.getTime() + 86_400_000) },
+      },
+      _sum: { minutes: true },
+    });
+    return (_sum.minutes ?? 0) / 60;
+  };
+
+  let remaining = input.hours;
+  let at = input.startedAt;
+
+  for (let spill = 0; spill <= MAX_SPILL_DAYS && remaining > 0.01; spill++) {
+    const room = MAX_HOURS_PER_DAY - (await hoursOn(at));
+
+    if (room < 0.25 && spill < MAX_SPILL_DAYS) {
+      // Forward normally, so a job's first shift is the day it was dispatched. One that
+      // would spill past today goes backwards instead: work has happened, the future has not.
+      const forward = new Date(at.getTime() + 86_400_000);
+      at =
+        input.today && forward > input.today
+          ? new Date(input.startedAt.getTime() - (spill + 1) * 86_400_000)
+          : forward;
+      continue;
+    }
+
+    const hours = Math.min(remaining, Math.max(room, 0.25));
+    const minutes = Math.max(1, Math.round(hours * 60));
+    const approved = at < input.approvedThrough;
+
+    await db.timeEntry.create({
+      data: {
+        technicianId: input.technicianId,
+        jobId: input.jobId,
+        kind: input.kind ?? 'WORK',
+        startedAt: at,
+        endedAt: new Date(at.getTime() + minutes * 60_000),
+        minutes,
+        isBillable: input.isBillable,
+        loadedHourlyCents: input.loadedHourlyCents,
+        costCents: (input.loadedHourlyCents * BigInt(Math.round(hours * 100))) / 100n,
+        isApproved: approved,
+        approvedAt: approved ? new Date(at.getTime() + 3 * 86_400_000) : null,
+      },
+    });
+
+    remaining -= hours;
+    const forward = new Date(at.getTime() + 86_400_000);
+    at = input.today && forward > input.today ? new Date(at.getTime() - 86_400_000) : forward;
+  }
 }
 
 /** Signed balance of one account as of a date, read straight off the posted ledger. */
@@ -1540,8 +1815,9 @@ async function reconcileMonth(
 interface UnbilledTimeInput {
   month: Date;
   today: Date;
-  techs: { technicianId: string; locationId: string; baseHourlyCents: bigint; loadedHourlyCents: bigint }[];
+  techs: SeededTech[];
   billableHours: Map<string, number>;
+  approvedThrough: Date;
 }
 
 /**
@@ -1575,8 +1851,28 @@ async function postUnbilledTechnicianTime(
   const daysElapsed = monthEnd > input.today ? input.today.getUTCDate() : daysInMonth;
   const paidHours = (PAID_HOURS_PER_MONTH * daysElapsed) / daysInMonth;
 
+  /*
+   * Written down as time, not only as cost.
+   *
+   * The accrual this credits is what a payroll run settles, and an hour charged to the P&L
+   * with no time entry behind it can never be paid: it would sit in Payroll Liabilities for
+   * good, reading as a rate variance it is not.
+   *
+   * Spread an hour or two across every working day rather than banked into one. That is
+   * what this time is — the drive between calls, the trip to the supplier, loading the van
+   * before eight — and a thirty-hour Friday would invent a week of overtime nobody worked.
+   */
+  const workingDays: Date[] = [];
+  for (let day = 1; day <= daysElapsed; day += 1) {
+    const candidate = new Date(Date.UTC(input.month.getUTCFullYear(), input.month.getUTCMonth(), day, 7));
+    if (candidate.getUTCDay() !== 0 && candidate <= input.today) workingDays.push(candidate);
+  }
+  if (workingDays.length === 0) workingDays.push(entryDate);
+
   const lines: Parameters<typeof postJournalEntry>[2]['lines'] = [];
-  let total = 0n;
+  let payrollTotal = 0n;
+  let appliedTotal = 0n;
+  const worked: { tech: SeededTech; hours: number }[] = [];
 
   for (const tech of input.techs) {
     const billed = input.billableHours.get(tech.technicianId) ?? 0;
@@ -1586,6 +1882,7 @@ async function postUnbilledTechnicianTime(
     const hours = BigInt(Math.round(unbilled * 100));
     const wage = (hours * tech.baseHourlyCents) / 100n;
     const burden = (hours * (tech.loadedHourlyCents - tech.baseHourlyCents)) / 100n;
+    const applied = (hours * tech.fixedHourlyCents) / 100n;
     if (wage + burden <= 0n) continue;
 
     lines.push({
@@ -1602,12 +1899,23 @@ async function postUnbilledTechnicianTime(
       technicianId: tech.technicianId,
       memo: 'Burden on unbilled hours',
     });
-    total += wage + burden;
+    payrollTotal += wage + burden - applied;
+    appliedTotal += applied;
+    worked.push({ tech, hours: unbilled });
   }
 
-  if (total === 0n) return;
+  if (payrollTotal + appliedTotal === 0n) return;
 
-  lines.push({ accountCode: ACCOUNTS.PAYROLL_LIABILITIES, creditCents: total });
+  if (payrollTotal > 0n) {
+    lines.push({ accountCode: ACCOUNTS.PAYROLL_LIABILITIES, creditCents: payrollTotal });
+  }
+  if (appliedTotal > 0n) {
+    lines.push({
+      accountCode: ACCOUNTS.VEHICLE_PHONE_APPLIED,
+      creditCents: appliedTotal,
+      memo: 'Van and phone on unbilled hours',
+    });
+  }
 
   await postJournalEntry(db, ctx, {
     entryDate,
@@ -1615,6 +1923,31 @@ async function postUnbilledTechnicianTime(
     memo: `Unbilled technician hours — ${input.month.toISOString().slice(0, 7)}`,
     lines,
   });
+
+  // One insert for the month rather than a few hundred round trips.
+  const shifts = worked.flatMap(({ tech, hours }) => {
+    const share = hours / workingDays.length;
+    const minutes = Math.max(1, Math.round(share * 60));
+
+    return workingDays.map((day) => {
+      const approved = day < input.approvedThrough;
+      return {
+        technicianId: tech.technicianId,
+        jobId: null,
+        kind: 'SHOP' as const,
+        startedAt: day,
+        endedAt: new Date(day.getTime() + minutes * 60_000),
+        minutes,
+        isBillable: false,
+        loadedHourlyCents: tech.loadedHourlyCents,
+        costCents: (tech.loadedHourlyCents * BigInt(Math.round(share * 100))) / 100n,
+        isApproved: approved,
+        approvedAt: approved ? new Date(day.getTime() + 3 * 86_400_000) : null,
+      };
+    });
+  });
+
+  if (shifts.length > 0) await db.timeEntry.createMany({ data: shifts });
 }
 
 interface CurrentWeekInput {
@@ -1692,6 +2025,8 @@ async function scheduleCurrentWeek(
 
   const hour = today.getUTCHours();
   const withinWorkingHours = hour >= WORKING_DAY_START && hour < WORKING_DAY_END;
+  // This week's hours are exactly the ones nobody has approved yet.
+  const approvedThrough = new Date(today.getTime() - 8 * 86_400_000);
   const now = withinWorkingHours
     ? today.getTime()
     : Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), DEMO_HOUR, 15);
@@ -1764,6 +2099,8 @@ async function scheduleCurrentWeek(
         specs.push({
           rng: new Rng(rng.int(1, 2 ** 30)),
           workDate: start,
+          approvedThrough,
+          today,
           tech,
           serviceCode,
           locationId: input.locationByCode.get(tech.locationCode)!,

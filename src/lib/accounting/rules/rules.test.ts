@@ -5,7 +5,7 @@ import type { PostingLine } from '../ledger';
 import { invoiceIssuedLines, invoiceWrittenOffLines } from './invoice';
 import { bankDepositLines, paymentReceivedLines } from './payment';
 import { cycleCountVarianceLines, partsConsumedLines, stockTransferLines } from './inventory';
-import { laborCostedLines, loadedHourlyCost, splitBurden } from './labor';
+import { fixedHourlyCost, laborCostedLines, loadedHourlyCost, splitBurden } from './labor';
 
 /** Every rule must produce a balanced set of lines — that is the whole contract. */
 function expectBalanced(lines: PostingLine[]): void {
@@ -225,6 +225,14 @@ describe('labor burden', () => {
     expect(burdenCents).toBe(1256n);
   });
 
+  it('separates the van and phone, which no payday settles', () => {
+    // 910.00 a month over 140 billable hours.
+    expect(fixedHourlyCost(typical)).toBe(650n);
+    expect(fixedHourlyCost(typical)).toBeLessThan(
+      loadedHourlyCost(typical) - typical.baseHourlyCents,
+    );
+  });
+
   it('posts wage and burden to separate COGS accounts against the job', () => {
     const lines = laborCostedLines({
       jobId: 'job-1',
@@ -240,6 +248,40 @@ describe('labor burden', () => {
     expect(amountOn(lines, ACCOUNTS.COGS_BURDEN, 'debitCents')).toBe(3140n); // 2.5 x 12.56
     expect(amountOn(lines, ACCOUNTS.PAYROLL_LIABILITIES, 'creditCents')).toBe(10140n);
     expect(lines.every((l) => l.technicianId === 'tech-1')).toBe(true);
+  });
+
+  it('accrues only what payday owes, applying the van and phone against overhead', () => {
+    const lines = laborCostedLines({
+      jobId: 'job-1',
+      locationId: 'loc-mesa',
+      technicianId: 'tech-1',
+      hours: '2.5',
+      baseHourlyCents: 2800n,
+      loadedHourlyCents: 4056n,
+      fixedHourlyCents: 650n,
+    });
+
+    expectBalanced(lines);
+    // The job still carries the whole loaded cost — nothing moved out of COGS.
+    expect(amountOn(lines, ACCOUNTS.COGS_LABOR, 'debitCents')).toBe(7000n);
+    expect(amountOn(lines, ACCOUNTS.COGS_BURDEN, 'debitCents')).toBe(3140n);
+    // What changes is who is owed: 2.5 x 6.50 of it is the van and the phone.
+    expect(amountOn(lines, ACCOUNTS.PAYROLL_LIABILITIES, 'creditCents')).toBe(8515n);
+    expect(amountOn(lines, ACCOUNTS.VEHICLE_PHONE_APPLIED, 'creditCents')).toBe(1625n);
+  });
+
+  it('refuses a fixed slice larger than the burden it is part of', () => {
+    expect(() =>
+      laborCostedLines({
+        jobId: 'job-1',
+        locationId: 'loc-mesa',
+        technicianId: 'tech-1',
+        hours: '1',
+        baseHourlyCents: 2800n,
+        loadedHourlyCents: 4056n,
+        fixedHourlyCents: 2000n,
+      }),
+    ).toThrow();
   });
 
   it('refuses a loaded cost below the base wage', () => {

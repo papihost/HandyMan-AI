@@ -41,7 +41,13 @@ export async function assertDemoOrganization(
  * table added later cannot quietly start leaking across resets.
  */
 const TEARDOWN: readonly string[] = [
-  // Ledger first: it references accounts, jobs, locations and periods.
+  // Payroll before the ledger. A run holds the journal entry that relieved the accrual and
+  // stamps the time entries it paid, so both have to let go before the entry can be deleted.
+  `DELETE FROM "TimeEntry" WHERE "technicianId" IN (SELECT "id" FROM "Technician" WHERE "organizationId" = $1)`,
+  `DELETE FROM "PayrollRunLine" WHERE "payrollRunId" IN (SELECT "id" FROM "PayrollRun" WHERE "organizationId" = $1)`,
+  `DELETE FROM "PayrollRun" WHERE "organizationId" = $1`,
+
+  // Ledger next: it references accounts, jobs, locations and periods.
   `DELETE FROM "JournalLine" WHERE "journalEntryId" IN (SELECT "id" FROM "JournalEntry" WHERE "organizationId" = $1)`,
   `DELETE FROM "JournalEntry" WHERE "organizationId" = $1`,
   `DELETE FROM "AuditLog" WHERE "organizationId" = $1`,
@@ -72,8 +78,7 @@ const TEARDOWN: readonly string[] = [
   // Invoices now that nothing points at them.
   `DELETE FROM "Invoice" WHERE "organizationId" = $1`,
 
-  // Field work.
-  `DELETE FROM "TimeEntry" WHERE "technicianId" IN (SELECT "id" FROM "Technician" WHERE "organizationId" = $1)`,
+  // Field work. Time entries went first, with payroll.
   `DELETE FROM "Photo" WHERE "jobId" IN (SELECT "id" FROM "Job" WHERE "organizationId" = $1) OR "quoteId" IN (SELECT "id" FROM "Quote" WHERE "organizationId" = $1)`,
   `DELETE FROM "ChecklistInstance" WHERE "jobId" IN (SELECT "id" FROM "Job" WHERE "organizationId" = $1)`,
   `DELETE FROM "ChecklistTemplate" WHERE "organizationId" = $1`,
@@ -158,15 +163,26 @@ export async function deleteDemoOrganization(
       await tx.$executeRawUnsafe('ALTER TABLE "JournalLine" DISABLE TRIGGER "JournalLine_immutable"');
       await tx.$executeRawUnsafe('ALTER TABLE "JournalLine" DISABLE TRIGGER "JournalLine_balanced"');
       await tx.$executeRawUnsafe('ALTER TABLE "AuditLog" DISABLE TRIGGER "AuditLog_append_only"');
+      let failed = false;
       try {
         for (const statement of TEARDOWN) {
           await tx.$executeRawUnsafe(statement, organizationId);
         }
+      } catch (error) {
+        failed = true;
+        throw error;
       } finally {
-        await tx.$executeRawUnsafe('ALTER TABLE "JournalEntry" ENABLE TRIGGER "JournalEntry_immutable"');
-        await tx.$executeRawUnsafe('ALTER TABLE "JournalLine" ENABLE TRIGGER "JournalLine_immutable"');
-        await tx.$executeRawUnsafe('ALTER TABLE "JournalLine" ENABLE TRIGGER "JournalLine_balanced"');
-        await tx.$executeRawUnsafe('ALTER TABLE "AuditLog" ENABLE TRIGGER "AuditLog_append_only"');
+        // A failed teardown aborts the transaction, so these re-enables fail too — and the
+        // error they throw would replace the one worth reading. The rollback restores the
+        // triggers either way; what matters is that the real failure survives.
+        try {
+          await tx.$executeRawUnsafe('ALTER TABLE "JournalEntry" ENABLE TRIGGER "JournalEntry_immutable"');
+          await tx.$executeRawUnsafe('ALTER TABLE "JournalLine" ENABLE TRIGGER "JournalLine_immutable"');
+          await tx.$executeRawUnsafe('ALTER TABLE "JournalLine" ENABLE TRIGGER "JournalLine_balanced"');
+          await tx.$executeRawUnsafe('ALTER TABLE "AuditLog" ENABLE TRIGGER "AuditLog_append_only"');
+        } catch (reenable) {
+          if (!failed) throw reenable;
+        }
       }
     },
     { timeout: 120_000 },

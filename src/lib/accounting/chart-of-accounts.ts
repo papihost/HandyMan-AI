@@ -61,6 +61,7 @@ export const ACCOUNTS = {
   COGS_PERMITS: '5060',
   INVENTORY_SHRINKAGE: '5090',
 
+  VEHICLE_PHONE_APPLIED: '6130',
   MERCHANT_FEES: '6300',
   DEPRECIATION: '6500',
   BAD_DEBT: '6900',
@@ -146,6 +147,11 @@ export const CHART_OF_ACCOUNTS: AccountSeed[] = [
   A('6080', 'Training & Certification', 'EXPENSE', 'OPERATING_EXPENSE'),
   A('6110', 'Vehicle — Fuel', 'EXPENSE', 'OPERATING_EXPENSE'),
   A('6120', 'Vehicle — Maintenance', 'EXPENSE', 'OPERATING_EXPENSE'),
+  // Contra. Carries a credit balance: the van and phone cost loaded onto technician
+  // hours, moved out of overhead and into the margin of the jobs that used them. The
+  // residue is over- or under-absorption against 6110/6120 — not a liability, which is
+  // where it used to land, where no payroll run could ever settle it.
+  A('6130', 'Vehicle & Phone Cost Applied', 'EXPENSE', 'OPERATING_EXPENSE', true),
   A('6200', 'Insurance — General Liability', 'EXPENSE', 'OPERATING_EXPENSE'),
   A('6210', "Insurance — Workers' Compensation", 'EXPENSE', 'OPERATING_EXPENSE'),
   A('6300', 'Merchant Processing Fees', 'EXPENSE', 'OPERATING_EXPENSE', true),
