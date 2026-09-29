@@ -1,0 +1,41 @@
+# Everything the product needs, which is Postgres and this app.
+#
+#   docker compose up --build            # migrate and serve, empty database
+#   SEED_DEMO=1 docker compose up --build # ...and build the Apex Handyman demo company
+#
+# The app waits for the database to answer rather than to exist: Postgres accepts a TCP
+# connection before it is ready to run a query, and a migration that starts in that window
+# fails in a way that looks like a broken image.
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: handyman_ai
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d handyman_ai']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    # Published so a developer can point psql or Prisma Studio at it. Drop this line to
+    # keep the database inside the compose network, which is what a server should do.
+    ports:
+      - '5432:5432'
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/handyman_ai?schema=public
+      # Off unless asked: seeding rebuilds the demo company from scratch.
+      SEED_DEMO: ${SEED_DEMO:-0}
+    ports:
+      - '3000:3000'
+
+volumes:
+  db-data:

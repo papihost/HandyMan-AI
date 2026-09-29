@@ -29,8 +29,14 @@ import {
   openReconciliation,
   setCleared,
 } from '../accounting/reconciliation';
-import { consumePartsForJob, receiveStock, transferStock } from '../inventory/service';
+import { consumePartsForJob, transferStock } from '../inventory/service';
 import { payOpenBills, recordJobPurchase } from '../purchasing/service';
+import {
+  createPurchaseOrder,
+  draftOrdersFromReorder,
+  receivePurchaseOrder,
+  submitPurchaseOrder,
+} from '../purchasing/orders';
 import { Rng } from './random';
 import {
   ALL_PRICE_ITEMS,
@@ -552,6 +558,13 @@ export async function seedDemoCompany(
    */
   const stockLines = PART_ITEMS.map((p) => ({ sku: p.sku, id: itemBySku.get(p.sku)! }));
 
+  /** Which supply house each part is bought from — one order per vendor, as they are sent. */
+  const vendorByPartId = new Map<string, string>();
+  for (const part of PART_ITEMS) {
+    const vendorId = part.serviceCode ? vendorByTrade.get(part.serviceCode) : undefined;
+    if (vendorId) vendorByPartId.set(itemBySku.get(part.sku)!, vendorId);
+  }
+
   // ---------------------------------------------------------------- jobs
   await postJournalEntry(db, ctx, {
     entryDate: new Date(windowStart.getTime() - 3 * 86_400_000),
@@ -625,6 +638,7 @@ export async function seedDemoCompany(
       warehouseByCode,
       techs,
       stockLines,
+      vendorByPartId,
     });
 
     const monthJobs = Math.round((jobTarget * month.weight) / totalWeight);
@@ -993,6 +1007,80 @@ export async function seedDemoCompany(
   log(
     `Payroll: ${payrollRuns} fortnightly runs, ${formatMoney(payrollPaid)} paid; ` +
       `${formatMoney(variance.outstandingCents)} left accrued`,
+  );
+
+  // ---------------------------------------------------------------- orders in flight
+  /*
+   * What is on order right now.
+   *
+   * The monthly restock has all arrived, which is correct and also leaves the ordering
+   * screen showing nothing but history. A real shop always has something in transit, so
+   * the vans that have run down since the last resupply get orders raised against them —
+   * from the live reorder list, not from a fixture, so the quantities are the ones the
+   * screen itself is suggesting.
+   *
+   * One of them is received short. A supply house being out of something is the normal
+   * case rather than an exception worth designing around, and it is the state worth
+   * having on screen: the order stays open for the rest, and the payable is only for what
+   * actually turned up.
+   */
+  const { drafts } = await draftOrdersFromReorder(db, ctx);
+
+  // One per van, not five for whichever van happens to be shortest of the most things.
+  // The drafts are grouped by vendor as well as by location, so taking them in order hands
+  // the same truck four orders from four supply houses and reads like a data problem.
+  const perLocation = new Map<string, (typeof drafts)[number]>();
+  for (const draft of drafts) {
+    if (!perLocation.has(draft.stockLocationId)) perLocation.set(draft.stockLocationId, draft);
+  }
+
+  let ordersRaised = 0;
+  let shortDeliveries = 0;
+
+  for (const [index, draft] of [...perLocation.values()].slice(0, 5).entries()) {
+    const raisedAt = new Date(today.getTime() - rng.int(1, 6) * 86_400_000);
+    const order = await createPurchaseOrder(db, ctx, {
+      vendorId: draft.vendorId,
+      receiveToStockLocationId: draft.stockLocationId,
+      lines: draft.lines.map((line) => ({
+        priceBookItemId: line.priceBookItemId,
+        quantity: line.quantity,
+      })),
+      expectedAt: new Date(raisedAt.getTime() + 5 * 86_400_000),
+      createdAt: raisedAt,
+      notes: `Restock ${draft.stockLocationCode}`,
+    });
+    await submitPurchaseOrder(db, ctx, order.id, { at: raisedAt });
+    ordersRaised++;
+
+    // The second one turned up, mostly.
+    if (index === 1) {
+      const lines = await db.purchaseOrderLine.findMany({
+        where: { purchaseOrderId: order.id },
+        orderBy: { description: 'asc' },
+      });
+      const short = lines
+        .slice(0, Math.max(1, lines.length - 1))
+        .map((line) => ({
+          purchaseOrderLineId: line.id,
+          quantity: String(Math.max(1, Math.floor(Number(line.quantity) * 0.6))),
+        }));
+
+      if (short.length > 0) {
+        await receivePurchaseOrder(db, ctx, order.id, {
+          lines: short,
+          receivedAt: new Date(raisedAt.getTime() + 2 * 86_400_000),
+          vendorInvoiceNo: `INV-${rng.int(100_000, 999_999)}`,
+        });
+        shortDeliveries++;
+      }
+    }
+  }
+
+  const ordersTotal = await db.purchaseOrder.count({ where: { organizationId: ctx.organizationId } });
+  log(
+    `Purchasing: ${ordersTotal} orders, ${ordersRaised} still in flight` +
+      (shortDeliveries > 0 ? `, ${shortDeliveries} received short` : ''),
   );
 
   // ---------------------------------------------------------------- period close
@@ -2161,6 +2249,7 @@ interface ResupplyInput {
   warehouseByCode: Map<string, string>;
   techs: SeededTech[];
   stockLines: { sku: string; id: string }[];
+  vendorByPartId: Map<string, string>;
 }
 
 /**
@@ -2259,13 +2348,43 @@ async function resupplyVans(
         };
       });
 
+    /*
+     * Bought, not conjured.
+     *
+     * This used to be a bare stock receipt with a reference that said `PO-...`, which is
+     * the one thing a purchasing system must not do: the stock appeared, the money went to
+     * payables, and there was no order and no vendor bill behind either of them. Nobody
+     * could answer who it was bought from or what was still owed for it — and the ordering
+     * screen, which reads real orders, had nothing on it at all.
+     *
+     * So the restock goes through the same engine the office uses: an order per vendor per
+     * warehouse, submitted a couple of days ahead, received on the first of the month. The
+     * receipt posts the stock and the payable in one entry and the bill hangs off it, which
+     * is what makes a line on the bank statement traceable to the parts it bought.
+     */
     const stamp = input.monthStart.toISOString().slice(0, 7);
-    if (receiptLines.length > 0) {
-      await receiveStock(db, ctx, {
-        stockLocationId: warehouse,
-        occurredAt: input.monthStart,
-        reference: `PO-${location.code}-${stamp}`,
-        lines: receiptLines,
+    const byVendor = new Map<string, typeof receiptLines>();
+    for (const line of receiptLines) {
+      const vendorId = input.vendorByPartId.get(line.priceBookItemId);
+      if (!vendorId) continue;
+      byVendor.set(vendorId, [...(byVendor.get(vendorId) ?? []), line]);
+    }
+
+    const orderedAt = new Date(input.monthStart.getTime() - 2 * 86_400_000);
+
+    for (const [vendorId, lines] of byVendor) {
+      const order = await createPurchaseOrder(db, ctx, {
+        vendorId,
+        receiveToStockLocationId: warehouse,
+        lines,
+        expectedAt: input.monthStart,
+        createdAt: orderedAt,
+        notes: `Monthly restock — ${location.name}`,
+      });
+      await submitPurchaseOrder(db, ctx, order.id, { at: orderedAt });
+      await receivePurchaseOrder(db, ctx, order.id, {
+        receivedAt: input.monthStart,
+        vendorInvoiceNo: `INV-${input.rng.int(100_000, 999_999)}`,
       });
     }
 

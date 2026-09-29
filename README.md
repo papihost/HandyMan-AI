@@ -59,6 +59,23 @@ npm run db:deploy             # apply migrations
 npm run db:seed               # build the Apex Handyman demo company
 ```
 
+### Or with Docker
+
+Postgres and the app together, on a machine with nothing else installed:
+
+```bash
+docker compose up --build              # migrate and serve, empty database
+SEED_DEMO=1 docker compose up --build  # ...and build the demo company first
+```
+
+Migrations run on every start, which is a no-op when there is nothing pending. Seeding
+does not: it rebuilds the demo company from scratch, so it only happens when `SEED_DEMO`
+asks for it — and the seed still refuses on any organization not marked `DEMO`.
+
+The image keeps its dev dependencies on purpose. It is expected to run migrations and the
+seed, and the seed is TypeScript that builds a year of a company through the posting
+engine; stripping the image to a standalone bundle would remove the thing it is for.
+
 ### The demo company
 
 `npm run db:seed` builds **Apex Handyman Services** — three branches (Phoenix, Mesa,
@@ -142,7 +159,9 @@ and row locks on the document-number sequence. A mock would prove nothing about 
 - Purchasing and payables: the restock list becomes purchase orders — one per supplier per
   shelf — and receiving one puts the stock on the shelf and the money in payables in a
   single posting the vendor bill hangs off, with short deliveries treated as the normal
-  case. A technician's supply-house receipt becomes a vendor bill coded straight to the
+  case. Every part in the demo company was bought this way, through the same engine the
+  office uses, so a year of orders and their bills is on screen rather than stock that
+  appeared from nowhere. A technician's supply-house receipt becomes a vendor bill coded straight to the
   job, subcontracted work posts to its own account, and bills are paid either one at a time
   or as a run — on the day the money actually leaves, with a payment record against each
   bill so a line on the bank statement can be reconciled to the bills it settled.

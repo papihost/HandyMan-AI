@@ -194,6 +194,12 @@ Switch to **Diane Kowalczyk, controller**.
    Nothing has posted: ordering is a commitment, not a cost, and the trial balance has not
    moved.
 
+   Scroll that screen. Every part this company has ever put on a van was bought through it
+   — a year of monthly restocks, each with the vendor bill it raised — and five orders are
+   in flight right now, one of them received short. Worth saying out loud, because most
+   systems let stock appear with no order and no bill behind it, and then nobody can answer
+   who it was bought from or what is still owed for it.
+
    Then receive one, with the supplier's invoice number off the paperwork in your hand. In
    one posting the stock goes up at what was actually paid for it and payables goes up by
    the same amount, and the vendor bill hangs off that same entry — so the document and

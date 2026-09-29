@@ -15,6 +15,29 @@ const COLUMN_TONE: Record<string, string> = {
   ON_HOLD: 'var(--critical)',
 };
 
+/**
+ * Today, or the next day that has any work on it.
+ *
+ * Looks forward a fortnight and no further: beyond that the honest answer is that nothing
+ * is booked, and a board showing a day three weeks out would be stranger than an empty one.
+ */
+async function nextDayWithWork(organizationId: string): Promise<Date> {
+  const now = new Date();
+  const from = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+
+  const next = await db.job.findFirst({
+    where: {
+      organizationId,
+      scheduledStart: { gte: from, lt: new Date(from.getTime() + 14 * 86_400_000) },
+      status: { notIn: ['CANCELLED'] },
+    },
+    orderBy: { scheduledStart: 'asc' },
+    select: { scheduledStart: true },
+  });
+
+  return next?.scheduledStart ?? now;
+}
+
 export default async function DispatchPage({
   searchParams,
 }: {
@@ -23,9 +46,25 @@ export default async function DispatchPage({
   const ctx = await requireContext();
   const { day } = await searchParams;
 
-  const date = day ? new Date(day) : new Date();
+  /*
+   * A day nobody asked for is the next one with work on it.
+   *
+   * The board defaults to today, and on a Sunday — or a public holiday, or the morning
+   * after a quiet week — today is empty. A dispatcher opening an empty board wants
+   * tomorrow, not proof that nothing is booked, and a demo that opens on a weekend should
+   * not lead with an empty screen. Asking for a specific day is different: that is a
+   * question, and "nothing" is a real answer to it.
+   */
+  const asked = day ? new Date(day) : null;
+  const date = asked ?? (await nextDayWithWork(ctx.organizationId));
   const board = await dispatchBoard(db, ctx, date);
   const total = board.reduce((count, column) => count + column.jobs.length, 0);
+
+  const now = new Date();
+  const isToday =
+    date.getUTCFullYear() === now.getUTCFullYear() &&
+    date.getUTCMonth() === now.getUTCMonth() &&
+    date.getUTCDate() === now.getUTCDate();
 
   const shift = (days: number) => {
     const moved = new Date(date.getTime() + days * 86_400_000);
@@ -52,7 +91,7 @@ export default async function DispatchPage({
             ← Previous
           </Link>
           <Link href="/office/dispatch" className="panel px-3 py-2">
-            Today
+            {isToday ? 'Today' : 'Next working day'}
           </Link>
           <Link href={shift(1)} className="panel px-3 py-2">
             Next →
